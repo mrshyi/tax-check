@@ -254,6 +254,7 @@ button {
 }
 
 .yearpick {
+  position: relative;
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--border-2);
@@ -262,17 +263,36 @@ button {
   box-shadow: var(--shadow-card);
 }
 
+.yearpick::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--accent-ink);
+  border-bottom: 2px solid var(--accent-ink);
+  pointer-events: none;
+  transform: translateY(-62%) rotate(45deg);
+}
+
 .yearpick select {
   min-width: 122px;
   height: 36px;
+  appearance: none;
+  -webkit-appearance: none;
   border: 0;
   background: transparent;
-  padding: 0 34px 0 14px;
+  padding: 0 48px 0 14px;
   font-size: 13px;
   font-weight: 600;
   color: var(--accent-ink);
   font-family: var(--mono);
   letter-spacing: 0;
+}
+
+.yearpick select::-ms-expand {
+  display: none;
 }
 
 .yearpick select:focus {

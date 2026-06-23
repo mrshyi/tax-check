@@ -1890,6 +1890,8 @@ const TOUR_STEPS = [
     target: "report-nav",
     title: "生成申报底稿",
     body: "完成核对后进入申报报告页，可复制申报数字，也可以导出 PDF 留存。",
+    spotlightPadding: 2,
+    spotlightRadius: 10,
   },
 ];
 
@@ -1982,7 +1984,7 @@ function GuidedTour({ stepIndex, steps, onNext, onBack, onClose }) {
         return;
       }
       const rect = element.getBoundingClientRect();
-      const padding = 8;
+      const padding = step.spotlightPadding ?? 8;
       const cardWidth = step.images?.length ? Math.min(640, window.innerWidth - 32) : Math.min(376, window.innerWidth - 32);
       const cardHeight = step.images?.length ? 500 : 210;
       const gap = 18;
@@ -2009,12 +2011,15 @@ function GuidedTour({ stepIndex, steps, onNext, onBack, onClose }) {
         top = 16;
         left = clamp(rect.right + gap, 16, window.innerWidth - cardWidth - 16);
       }
+      const spotlightTop = clamp(rect.top - padding, 8, window.innerHeight - 16);
+      const spotlightLeft = clamp(rect.left - padding, 8, window.innerWidth - 16);
       setLayout({
         spotlight: {
-          top: Math.max(8, rect.top - padding),
-          left: Math.max(8, rect.left - padding),
-          width: Math.min(window.innerWidth - 16, rect.width + padding * 2),
-          height: Math.min(window.innerHeight - 16, rect.height + padding * 2),
+          top: spotlightTop,
+          left: spotlightLeft,
+          width: Math.min(window.innerWidth - spotlightLeft - 8, rect.width + padding * 2),
+          height: Math.min(window.innerHeight - spotlightTop - 8, rect.height + padding * 2),
+          borderRadius: step.spotlightRadius ?? 12,
         },
         card: {
           top,
