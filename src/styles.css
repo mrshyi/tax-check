@@ -34,6 +34,10 @@ body,
   min-height: 100%;
 }
 
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   background: var(--bg);
   color: var(--fg);
@@ -346,7 +350,7 @@ button {
 .wrap {
   max-width: 1500px;
   margin: 0 auto;
-  padding: 22px 28px 60px;
+  padding: 22px 44px 60px 28px;
 }
 
 .kpis {

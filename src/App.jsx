@@ -44,6 +44,7 @@ import {
   TAX_RATE,
   TAX_YEAR,
 } from "./data";
+import { initAnalytics, trackReportGenerated } from "./lib/analytics";
 import { analyzeUploadedFiles, costCorrectionKeyForRealizedTradeId, recomputeAnalyses } from "./lib/clientAnalyze";
 import { ParserValidationError } from "./lib/parsers/common";
 
@@ -2046,7 +2047,7 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   );
 }
 
-function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, onCopyReport, onExportCsv, copied, fx }) {
+function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, onCopyReport, onExportCsv, onExportPdf, copied, fx }) {
   const fifo = methodSummaries.fifo;
   const acb = methodSummaries.acb;
   const { best, other, isTie, saving } = bestCostMethod(methodSummaries);
@@ -2063,7 +2064,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         <button className="btn" type="button" onClick={onCopyReport}>
           <Copy /> {copied ? "已复制申报数字" : "复制申报数字"}
         </button>
-        <button className="btn primary" type="button" onClick={() => window.print()}>
+        <button className="btn primary" type="button" onClick={onExportPdf}>
           <Printer /> 导出 PDF
         </button>
       </div>
@@ -2729,6 +2730,10 @@ export default function App() {
   const [pendingCostFlashToken, setPendingCostFlashToken] = useState(0);
 
   useEffect(() => {
+    initAnalytics();
+  }, []);
+
+  useEffect(() => {
     if (!parsedInput) return;
     setAnalyses(recomputeAnalyses(parsedInput, year, excludedRowKeys, costCorrectionInputsFromState(costCorrections)));
   }, [costCorrections, excludedRowKeys, parsedInput, year]);
@@ -3059,10 +3064,21 @@ export default function App() {
       isTie ? "自然年 FIFO 与自然年 ACB 税额一致" : `对比${other.label}应缴 ¥${fmt(other.summary.tax)}，可节省 ¥${fmt(saving)}`,
       `年末汇率：USD ${fx.US.toFixed(4)} / HKD ${fx.HK.toFixed(4)}（${fx.date} ${fx.source}）`,
     ].join("\n");
-    navigator.clipboard?.writeText(text).finally(() => {
+    trackReportGenerated("copy_numbers");
+    const markCopied = () => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
-    });
+    };
+    if (!navigator.clipboard?.writeText) {
+      markCopied();
+      return;
+    }
+    navigator.clipboard.writeText(text).finally(markCopied);
+  }
+
+  function exportPdf() {
+    trackReportGenerated("export_pdf");
+    window.print();
   }
 
   function startTour() {
@@ -3167,6 +3183,7 @@ export default function App() {
           dividends={dividends}
           onCopyReport={copyReport}
           onExportCsv={exportCsv}
+          onExportPdf={exportPdf}
           copied={copied}
           fx={fx}
         />
