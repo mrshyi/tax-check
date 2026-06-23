@@ -273,6 +273,13 @@ function classForNumber(n) {
   return n >= 0 ? "pos" : "neg";
 }
 
+function isValidManualCostValue(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return false;
+  const numericValue = Number(trimmed);
+  return Number.isFinite(numericValue) && numericValue >= 0;
+}
+
 function brokerLabel(broker) {
   return broker === "longbridge" ? "长桥" : "富途";
 }
@@ -301,6 +308,11 @@ function issueSeverityLabel(severity) {
   if (severity === "blocking") return "无法继续";
   if (severity === "warning") return "需要确认";
   return "提示";
+}
+
+function isCostGapIssue(issue) {
+  const text = `${issue?.id ?? ""} ${issue?.title ?? ""} ${issue?.detail ?? ""}`;
+  return text.includes("cost-gap") || text.includes("历史成本缺失") || text.includes("待补成本");
 }
 
 function fallbackFileFingerprint(file) {
@@ -931,8 +943,7 @@ function PnlDetailRow({ row, idx, method, manualCosts, onManualCostChange, onSub
   if (row.missingCost) {
     const request = row.missingCostRequest;
     const rawValue = manualCosts[request.id] ?? "";
-    const numericValue = Number(rawValue);
-    const canSubmit = Number.isFinite(numericValue) && numericValue >= 0 && rawValue !== "" && analysisStatus !== "running";
+    const canSubmit = isValidManualCostValue(rawValue) && analysisStatus !== "running";
     return (
       <tr className="detail-row">
         <td colSpan="8">
@@ -1969,6 +1980,70 @@ function AppIssueModal({ issue, onClose }) {
   );
 }
 
+function CostBasisModal({ request, value, analysisStatus, onChange, onSubmit, onClose }) {
+  const canSubmit = isValidManualCostValue(value) && analysisStatus !== "running";
+  return (
+    <div className="app-modal-backdrop" role="presentation">
+      <section className="intro-modal cost-basis-modal" role="dialog" aria-modal="true" aria-labelledby="cost-basis-title">
+        <button className="modal-close" type="button" aria-label="稍后填写成本" onClick={onClose}>
+          <X />
+        </button>
+        <div className="intro-icon warning-icon">
+          <Calculator />
+        </div>
+        <span className="modal-kicker warning">需要补充</span>
+        <h2 id="cost-basis-title">{request.symbol} 历史成本缺失</h2>
+        <p>
+          系统检测到目标年度卖出 {request.quantity.toLocaleString()} 股 {request.securityName}，但上传材料无法匹配足够买入成本。请输入这批卖出对应的总成本，确认后会立即重新计算 FIFO / ACB。
+        </p>
+        <div className="cost-basis-card">
+          <div>
+            <span>卖出日期</span>
+            <b>{request.sellDate}</b>
+          </div>
+          <div>
+            <span>卖出收入</span>
+            <b>
+              {request.currency} {fmt(request.proceeds)}
+            </b>
+          </div>
+          <div>
+            <span>券商</span>
+            <b>{request.broker}</b>
+          </div>
+        </div>
+        <form
+          className="cost-basis-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canSubmit) onSubmit(request.id, value);
+          }}
+        >
+          <label>
+            <span>总成本（{request.currency}）</span>
+            <input
+              className="plain-input"
+              value={value}
+              onChange={(event) => onChange(request.id, event.target.value)}
+              placeholder="例如 298935"
+              inputMode="decimal"
+              autoFocus
+            />
+          </label>
+          <div className="intro-actions">
+            <button className="btn" type="button" onClick={onClose}>
+              稍后填写
+            </button>
+            <button className="btn primary" type="submit" disabled={!canSubmit}>
+              <Calculator /> {analysisStatus === "running" ? "重算中..." : "确认并重算"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function GuidedTour({ stepIndex, steps, onNext, onBack, onClose }) {
   const step = steps[stepIndex];
   const [layout, setLayout] = useState(null);
@@ -2117,6 +2192,8 @@ export default function App() {
   const [dismissedIssueIds, setDismissedIssueIds] = useState(new Set());
   const [manualIssues, setManualIssues] = useState([]);
   const [activeIssue, setActiveIssue] = useState(null);
+  const [activeCostRequest, setActiveCostRequest] = useState(null);
+  const [dismissedCostRequestIds, setDismissedCostRequestIds] = useState(new Set());
   const [pendingCostFlashAfterIssues, setPendingCostFlashAfterIssues] = useState(false);
   const [pendingCostFlashToken, setPendingCostFlashToken] = useState(0);
 
@@ -2134,9 +2211,10 @@ export default function App() {
   const tradeActivities = useMemo(() => tradeActivitiesFromAnalysis(currentAnalysis), [currentAnalysis]);
   const realizedTrades = currentAnalysis?.realizedTrades ?? [];
   const analysisIssues = useMemo(
-    () => (currentAnalysis?.issues ?? []).filter((issue) => issue.severity !== "blocking"),
+    () => (currentAnalysis?.issues ?? []).filter((issue) => issue.severity !== "blocking" && !isCostGapIssue(issue)),
     [currentAnalysis],
   );
+  const costBasisRequests = useMemo(() => currentAnalysis?.costBasisRequests ?? [], [currentAnalysis]);
   const modalIssues = useMemo(
     () => [...manualIssues, ...analysisIssues].filter((issue) => !dismissedIssueIds.has(issue.id)),
     [analysisIssues, dismissedIssueIds, manualIssues],
@@ -2157,9 +2235,25 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (activeIssue || modalIssues.length === 0) return;
+    if (activeIssue || activeCostRequest || modalIssues.length === 0) return;
     setActiveIssue(modalIssues[0]);
-  }, [activeIssue, modalIssues]);
+  }, [activeCostRequest, activeIssue, modalIssues]);
+
+  useEffect(() => {
+    if (!activeCostRequest) return;
+    if (costBasisRequests.some((request) => request.id === activeCostRequest.id)) return;
+    setActiveCostRequest(null);
+  }, [activeCostRequest, costBasisRequests]);
+
+  useEffect(() => {
+    if (showIntro || activeIssue || activeCostRequest || modalIssues.length > 0 || analysisStatus === "running") return;
+    const nextRequest = costBasisRequests.find((request) => {
+      return !dismissedCostRequestIds.has(request.id) && !isValidManualCostValue(manualCosts[request.id]);
+    });
+    if (!nextRequest) return;
+    setPage("workbench");
+    setActiveCostRequest(nextRequest);
+  }, [activeCostRequest, activeIssue, analysisStatus, costBasisRequests, dismissedCostRequestIds, manualCosts, modalIssues.length, showIntro]);
 
   useEffect(() => {
     if (activeIssue || modalIssues.length > 0 || !pendingCostFlashAfterIssues) return undefined;
@@ -2329,8 +2423,8 @@ export default function App() {
     try {
       const effectiveManualCosts = { ...manualCosts, ...manualCostOverrides };
       const manualCostInputs = Object.entries(effectiveManualCosts)
-        .map(([id, value]) => ({ id, costBasis: Number(value) }))
-        .filter((item) => item.id && Number.isFinite(item.costBasis) && item.costBasis >= 0);
+        .filter(([, value]) => isValidManualCostValue(value))
+        .map(([id, value]) => ({ id, costBasis: Number(String(value).trim()) }));
       const result = await analyzeUploadedFiles({
         files,
         taxYear: year,
@@ -2364,6 +2458,7 @@ export default function App() {
 
   function submitManualCost(id, value) {
     setManualCosts((current) => ({ ...current, [id]: value }));
+    setActiveCostRequest(null);
     runAnalysis({ [id]: value });
   }
 
@@ -2435,6 +2530,19 @@ export default function App() {
     setActiveIssue(null);
   }
 
+  function closeCostBasisModal() {
+    if (activeCostRequest?.id) {
+      setDismissedCostRequestIds((current) => {
+        const next = new Set(current);
+        next.add(activeCostRequest.id);
+        return next;
+      });
+      setPendingCostFlashAfterIssues(true);
+    }
+    setPage("workbench");
+    setActiveCostRequest(null);
+  }
+
   function nextTourStep() {
     setTourStep((current) => (current >= TOUR_STEPS.length - 1 ? -1 : current + 1));
   }
@@ -2500,6 +2608,16 @@ export default function App() {
         />
       ) : null}
       {!showIntro && activeIssue ? <AppIssueModal issue={activeIssue} onClose={closeActiveIssue} /> : null}
+      {!showIntro && !activeIssue && activeCostRequest ? (
+        <CostBasisModal
+          request={activeCostRequest}
+          value={manualCosts[activeCostRequest.id] ?? ""}
+          analysisStatus={analysisStatus}
+          onChange={updateManualCost}
+          onSubmit={submitManualCost}
+          onClose={closeCostBasisModal}
+        />
+      ) : null}
       {showIntro ? <ProjectIntroModal onStart={startTour} onClose={() => setShowIntro(false)} /> : null}
       {tourStep >= 0 ? <GuidedTour stepIndex={tourStep} steps={TOUR_STEPS} onNext={nextTourStep} onBack={previousTourStep} onClose={closeTour} /> : null}
     </>

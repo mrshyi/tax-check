@@ -2026,6 +2026,51 @@ h2.sh .idx {
   white-space: pre-line;
 }
 
+.cost-basis-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.cost-basis-card div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.cost-basis-card span,
+.cost-basis-form label span {
+  display: block;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.cost-basis-card b {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cost-basis-form {
+  margin-top: 16px;
+}
+
+.cost-basis-form label {
+  display: block;
+}
+
+.cost-basis-form .plain-input {
+  margin-top: 6px;
+}
+
 .modal-kicker {
   display: inline-flex;
   align-items: center;
@@ -2366,6 +2411,10 @@ h2.sh .idx {
 
   .intro-modal {
     padding: 24px;
+  }
+
+  .cost-basis-card {
+    grid-template-columns: 1fr;
   }
 
   .intro-actions,
