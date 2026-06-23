@@ -824,20 +824,23 @@ function buildOpenPositions(raw: LongbridgeRawData): OpenPosition[] {
     latestByCode.set(`${position.currency}::${position.code}`, position);
   }
 
-  return Array.from(latestByCode.values()).map((position) => ({
-    id: `longbridge-open-${position.currency}-${position.code}`,
-    broker: "长桥",
-    asOf: position.sourcePdf.match(/2025(\d{2})/) ? `2025-${position.sourcePdf.match(/2025(\d{2})/)?.[1]}-末` : "",
-    market: canonicalText(position.market),
-    currency: position.currency,
-    symbol: displayCode(position.code),
-    securityName: position.name,
-    quantity: position.endQty,
-    marketValue: position.marketValue,
-    costBasis: position.endQty * position.avgCost,
-    unrealizedGainLoss: position.unrealizedGainLoss,
-    source: position.sourcePdf,
-  }));
+  return Array.from(latestByCode.values()).map((position) => {
+    const statementMonth = position.sourcePdf.match(/(20\d{2})[-_年.]?(0[1-9]|1[0-2])/);
+    return {
+      id: `longbridge-open-${position.currency}-${position.code}`,
+      broker: "长桥",
+      asOf: statementMonth ? `${statementMonth[1]}-${statementMonth[2]}-末` : "",
+      market: canonicalText(position.market),
+      currency: position.currency,
+      symbol: displayCode(position.code),
+      securityName: position.name,
+      quantity: position.endQty,
+      marketValue: position.marketValue,
+      costBasis: position.endQty * position.avgCost,
+      unrealizedGainLoss: position.unrealizedGainLoss,
+      source: position.sourcePdf,
+    };
+  });
 }
 
 export async function parseLongbridgePdfs(
@@ -879,6 +882,15 @@ export async function parseLongbridgePdfs(
   parsed.dividends.push(...buildDividends(raw.cashFlows));
   parsed.openPositions.push(...buildOpenPositions(raw));
   parsed.issues.push(...raw.issues, ...realized.issues);
+
+  if (raw.trades.length === 0 && raw.cashFlows.length === 0 && raw.moves.length === 0 && raw.positions.length === 0 && files.length > 0) {
+    parsed.issues.push({
+      id: "longbridge-invalid-format",
+      severity: "blocking",
+      title: "长桥文件格式不符合要求",
+      detail: "长桥只支持 PDF 月结单。当前文件没有识别到账户流水、股票交易、持仓或资产进出表，请确认上传的是长桥月结单 PDF 且密码正确。",
+    });
+  }
 
   if (raw.trades.length === 0 && files.length > 0) {
     parsed.issues.push({

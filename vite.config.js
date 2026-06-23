@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
+  base: process.env.GITHUB_PAGES === "true" ? "/tax-check/" : "/",
   plugins: [react()],
   resolve: {
     alias: {

@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import * as XLSX from "xlsx";
 import {
   AlertCircle,
+  ArrowLeft,
+  ArrowRight,
   Calculator,
   Check,
   CheckCircle2,
@@ -12,6 +15,7 @@ import {
   Download,
   FileText,
   Info,
+  Megaphone,
   Printer,
   Search,
   ShieldCheck,
@@ -30,6 +34,7 @@ import {
   EXCLUDED_RECORDS,
   FLOW_STOCKS,
   FX,
+  fxForTaxYear,
   PNL_ROWS,
   POSITIONS,
   TAX_RATE,
@@ -103,23 +108,23 @@ function emptySummary() {
   };
 }
 
-function fxForCurrency(currency) {
-  if (currency === "USD") return FX.US;
-  if (currency === "HKD") return FX.HK;
+function fxForCurrency(currency, fx = FX) {
+  if (currency === "USD") return fx.US;
+  if (currency === "HKD") return fx.HK;
   return 1;
 }
 
-function dividendNetRmbFromDividends(dividends) {
+function dividendNetRmbFromDividends(dividends, fx = FX) {
   return (dividends ?? []).reduce((sum, dividend) => {
-    return sum + (dividend.grossAmount - dividend.taxWithheld - dividend.fee) * fxForCurrency(dividend.currency);
+    return sum + (dividend.grossAmount - dividend.taxWithheld - dividend.fee) * fxForCurrency(dividend.currency, fx);
   }, 0);
 }
 
-function summaryFromAnalysis(analysis) {
+function summaryFromAnalysis(analysis, fx = FX) {
   if (!analysis) return emptySummary();
   return {
     capitalGain: analysis.summary.capitalGainRmb,
-    dividend: dividendNetRmbFromDividends(analysis.dividends),
+    dividend: dividendNetRmbFromDividends(analysis.dividends, fx),
     dividendTaxBase: analysis.summary.dividend.taxableBaseRmb,
     dividendWithholdingCredit: analysis.summary.dividend.withholdingCreditRmb,
     taxable: analysis.summary.capitalTaxBaseRmb + analysis.summary.dividend.taxableBaseRmb,
@@ -236,12 +241,12 @@ function coverageMonths(year, files, tradeActivities, dividends, realizedTrades,
   });
 }
 
-function methodReportFromAnalysis(analysis) {
+function methodReportFromAnalysis(analysis, fx = FX) {
   const byMarket = { HK: 0, US: 0 };
   for (const symbol of analysis?.symbols ?? []) {
     byMarket[currencyToMarket(symbol.currency)] += symbol.gainLossRmb;
   }
-  const summary = summaryFromAnalysis(analysis);
+  const summary = summaryFromAnalysis(analysis, fx);
   return {
     ...summary,
     byMarket,
@@ -268,22 +273,177 @@ function classForNumber(n) {
   return n >= 0 ? "pos" : "neg";
 }
 
-function guessBroker(fileName) {
-  const lower = fileName.toLowerCase();
-  if (fileName.includes("富途") || lower.includes("futu")) return "富途证券";
-  if (fileName.includes("长桥") || lower.includes("longbridge")) return "长桥证券";
-  if (fileName.includes("老虎") || lower.includes("tiger")) return "老虎证券";
-  if (lower.includes("ibkr") || lower.includes("interactive")) return "IBKR";
-  return "待选择券商";
-}
-
-function guessBrokerId(fileName) {
-  const broker = guessBroker(fileName);
-  return broker === "长桥证券" ? "longbridge" : "futu";
-}
-
 function brokerLabel(broker) {
   return broker === "longbridge" ? "长桥" : "富途";
+}
+
+const BROKER_OPTIONS = [
+  { value: "futu", label: "富途" },
+  { value: "longbridge", label: "长桥" },
+];
+const TAX_YEAR_OPTIONS = [2021, 2022, 2023, 2024, 2025];
+const PUBLISHER_NAME = "汤姆喵的奇妙旅行";
+const ASSET_BASE = import.meta.env.BASE_URL;
+
+const FUTU_SHEET_MARKERS = ["账户信息", "证券-持仓总览", "证券-交易流水", "证券-资产进出", "证券-资金进出"];
+const FUTU_TEXT_MARKERS = ["富途", "futu", "moomoo", "牛牛号", "账户号码"];
+const LONGBRIDGE_TEXT_MARKERS = ["长桥", "longbridge", "long bridge", "long bridge hk", "long bridge securities"];
+
+function brokerConfidenceLabel(confidence) {
+  if (confidence === "manual") return "手动选择";
+  if (confidence === "high") return "已自动识别";
+  if (confidence === "medium") return "默认判断";
+  if (confidence === "pending") return "识别中";
+  return "待确认";
+}
+
+function issueSeverityLabel(severity) {
+  if (severity === "blocking") return "无法继续";
+  if (severity === "warning") return "需要确认";
+  return "提示";
+}
+
+function fallbackFileFingerprint(file) {
+  return `file:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+async function fileFingerprint(file) {
+  if (window.crypto?.subtle) {
+    const buffer = await file.arrayBuffer();
+    const hash = await window.crypto.subtle.digest("SHA-256", buffer);
+    return `sha256:${Array.from(new Uint8Array(hash))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("")}`;
+  }
+  return fallbackFileFingerprint(file);
+}
+
+function hasAnyMarker(text, markers) {
+  const normalized = String(text ?? "").toLowerCase();
+  return markers.some((marker) => normalized.includes(marker.toLowerCase()));
+}
+
+function lowerFileName(fileName) {
+  return String(fileName ?? "").toLowerCase();
+}
+
+function isExcelFile(fileName) {
+  return /\.(xlsx|xls)$/i.test(fileName);
+}
+
+function isPdfFile(fileName) {
+  return /\.pdf$/i.test(fileName);
+}
+
+function baseBrokerGuess(fileName) {
+  const lower = lowerFileName(fileName);
+  if (fileName.includes("富途") || lower.includes("futu") || lower.includes("moomoo")) {
+    return {
+      broker: "futu",
+      confidence: "high",
+      reason: "文件名包含富途特征，已默认选择富途。",
+    };
+  }
+  if (fileName.includes("长桥") || lower.includes("longbridge") || lower.includes("long bridge")) {
+    return {
+      broker: "longbridge",
+      confidence: "high",
+      reason: "文件名包含长桥特征，已默认选择长桥。",
+    };
+  }
+  if (isPdfFile(fileName)) {
+    return {
+      broker: "longbridge",
+      confidence: "medium",
+      reason: "PDF 文件会默认按长桥月结单处理，请确认券商是否正确。",
+    };
+  }
+  if (isExcelFile(fileName)) {
+    return {
+      broker: "futu",
+      confidence: "medium",
+      reason: "Excel 文件会默认按富途年度报表处理，请确认券商是否正确。",
+    };
+  }
+  return {
+    broker: "futu",
+    confidence: "low",
+    reason: "未从文件名或格式识别券商，请在下拉框确认后再解析。",
+  };
+}
+
+function workbookPreviewText(workbook) {
+  return workbook.SheetNames.slice(0, 4)
+    .map((sheetName) => {
+      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], {
+        FS: " ",
+        RS: " ",
+        blankrows: false,
+      });
+      return `${sheetName} ${csv.slice(0, 1800)}`;
+    })
+    .join(" ");
+}
+
+async function detectBrokerFromFile(file) {
+  const fallback = baseBrokerGuess(file.name);
+  try {
+    if (isExcelFile(file.name)) {
+      const workbook = XLSX.read(await file.arrayBuffer(), {
+        type: "array",
+        sheetRows: 20,
+        cellDates: false,
+      });
+      const sheetHits = FUTU_SHEET_MARKERS.filter((sheetName) => workbook.Sheets[sheetName]);
+      if (sheetHits.length >= 3) {
+        return {
+          broker: "futu",
+          confidence: "high",
+          reason: `识别到富途年度报表工作表：${sheetHits.slice(0, 3).join("、")}。`,
+        };
+      }
+      const preview = workbookPreviewText(workbook);
+      if (hasAnyMarker(preview, FUTU_TEXT_MARKERS)) {
+        return {
+          broker: "futu",
+          confidence: "high",
+          reason: "文件内容包含富途账户/报表特征，已默认选择富途。",
+        };
+      }
+      if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
+        return {
+          broker: "longbridge",
+          confidence: "medium",
+          reason: "文件内容包含长桥特征；当前长桥解析器主要支持 PDF 月结单，请解析前确认文件格式。",
+        };
+      }
+    }
+
+    if (isPdfFile(file.name)) {
+      const preview = await file.slice(0, Math.min(file.size, 512 * 1024)).text();
+      if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
+        return {
+          broker: "longbridge",
+          confidence: "high",
+          reason: "PDF 内容包含长桥特征，已默认选择长桥。",
+        };
+      }
+      if (hasAnyMarker(preview, FUTU_TEXT_MARKERS)) {
+        return {
+          broker: "futu",
+          confidence: "low",
+          reason: "PDF 内容包含富途特征，但当前富途解析器只接受 Excel 年度报表，请确认文件。",
+        };
+      }
+    }
+  } catch {
+    return {
+      ...fallback,
+      confidence: fallback.confidence === "high" ? "medium" : fallback.confidence,
+      reason: `${fallback.reason} 文件内容读取失败，已按文件名/格式判断。`,
+    };
+  }
+  return fallback;
 }
 
 function guessFileType(fileName) {
@@ -349,9 +509,30 @@ function Market({ market }) {
   );
 }
 
-function Segmented({ value, options, onChange, className = "" }) {
+function TaxCheckMark({ className = "" }) {
   return (
-    <div className={`seg ${className}`}>
+    <span className={`taxcheck-mark ${className}`} aria-hidden="true">
+      <ShieldCheck />
+    </span>
+  );
+}
+
+function PublisherCredit({ className = "" }) {
+  return (
+    <div className={`publisher-credit ${className}`} aria-label={`由公众号：${PUBLISHER_NAME}制作`}>
+      <span className="publisher-credit-icon" aria-hidden="true">
+        <Megaphone />
+      </span>
+      <span>
+        由公众号：<b>{PUBLISHER_NAME}</b>制作
+      </span>
+    </div>
+  );
+}
+
+function Segmented({ value, options, onChange, className = "", tourId }) {
+  return (
+    <div className={`seg ${className}`} data-tour-id={tourId}>
       {options.map((option) => (
         <button
           type="button"
@@ -366,7 +547,7 @@ function Segmented({ value, options, onChange, className = "" }) {
   );
 }
 
-function TopBar({ activePage, onNavigate, onUpload, onExportCsv }) {
+function TopBar({ activePage, onNavigate }) {
   const nav = [
     ["workbench", "税务工作台"],
     ["holdings", "持仓与流水"],
@@ -375,27 +556,26 @@ function TopBar({ activePage, onNavigate, onUpload, onExportCsv }) {
 
   return (
     <header className="topbar">
-      <div className="brand">
-        <span className="mark" aria-hidden="true">
-          <ShieldCheck />
-        </span>
-        <b>TaxCheck</b>
-        <span className="sub">海外证券资本利得税</span>
-      </div>
-      <nav className="topnav" aria-label="主导航">
-        {nav.map(([key, label]) => (
-          <button key={key} type="button" className={activePage === key ? "on" : ""} onClick={() => onNavigate(key)}>
-            {label}
-          </button>
-        ))}
-      </nav>
-      <div className="top-actions">
-        <button className="btn" type="button" onClick={onExportCsv}>
-          <Download /> 导出 CSV
-        </button>
-        <button className="btn primary" type="button" onClick={onUpload}>
-          <Upload /> 导入券商数据
-        </button>
+      <div className="topbar-inner">
+        <div className="brand">
+          <TaxCheckMark className="brand-mark" />
+          <b>TaxCheck</b>
+          <span className="sub">海外证券资本利得税</span>
+        </div>
+        <nav className="topnav" aria-label="主导航">
+          {nav.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={activePage === key ? "on" : ""}
+              onClick={() => onNavigate(key)}
+              data-tour-id={key === "report" ? "report-nav" : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        <PublisherCredit className="topbar-publisher" />
       </div>
     </header>
   );
@@ -405,40 +585,37 @@ function ContextBar({ year, setYear, methodId, setMethodId, files, excludedRecor
   const method = methodById(methodId);
   return (
     <div className="context">
-      <span className="ctx-label">纳税年度</span>
-      <div className="yearpick">
-        {[2022, 2023, TAX_YEAR].map((item) => (
-          <button key={item} type="button" className={year === item ? "on" : ""} onClick={() => setYear(item)}>
-            {item}
-          </button>
-        ))}
-      </div>
-      <span className="ctx-label context-method-label">计算口径</span>
-      <Segmented
-        className="method-seg"
-        value={methodId}
-        options={COST_METHODS.map((item) => ({ value: item.id, label: item.label }))}
-        onChange={setMethodId}
-      />
-      <span className="ctx-chip">
-        <span className="dot accent-dot" />
-        <b>{method.tag}</b> {method.description}
-      </span>
-      <span className="ctx-chip">
-        <span className="dot" />
-        已导入 <b>{files.length}</b> 份券商文件
-      </span>
-      <span className="ctx-chip">
-        覆盖标的 <b>{symbolCount}</b> 只 · 已剔除 <b>{excludedRecords.length}</b> 只
-      </span>
-      <div className="ctx-spacer" />
-      <span className="ctx-note">
-        <Info />
-        <span>
-          年末汇率口径 · <span className="num">{FX.date}</span> {FX.source} · <span className="num">USD {FX.US.toFixed(4)}</span> ·{" "}
-          <span className="num">HKD {FX.HK.toFixed(4)}</span>
+      <div className="context-inner">
+        <span className="ctx-label">纳税年度</span>
+        <div className="yearpick">
+          <select value={year} onChange={(event) => setYear(Number(event.target.value))} aria-label="纳税年度">
+            {TAX_YEAR_OPTIONS.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </div>
+        <span className="ctx-label context-method-label">计算口径</span>
+        <Segmented
+          className="method-seg"
+          value={methodId}
+          options={COST_METHODS.map((item) => ({ value: item.id, label: item.label }))}
+          onChange={setMethodId}
+          tourId="method-selector"
+        />
+        <span className="ctx-chip">
+          <span className="dot accent-dot" />
+          <b>{method.tag}</b> {method.description}
         </span>
-      </span>
+        <span className="ctx-chip">
+          <span className="dot" />
+          已导入 <b>{files.length}</b> 份券商文件
+        </span>
+        <span className="ctx-chip">
+          覆盖标的 <b>{symbolCount}</b> 只 · 已剔除 <b>{excludedRecords.length}</b> 只
+        </span>
+      </div>
     </div>
   );
 }
@@ -501,13 +678,13 @@ function Kpis({ summary, dividendCount }) {
 }
 
 function Sidebar({
+  year,
   files,
   onUpload,
   onRemoveFile,
   onBrokerChange,
   onAnalyze,
   analysisStatus,
-  analysisError,
   password,
   onPasswordChange,
   excludedRecords,
@@ -515,7 +692,7 @@ function Sidebar({
 }) {
   return (
     <aside>
-      <div className="panel">
+      <div className="panel" data-tour-id="broker-files-panel">
         <div className="panel-h">
           <h3>
             <FileText /> 券商文件
@@ -523,12 +700,12 @@ function Sidebar({
           <span className="count">{files.length}</span>
         </div>
         <div className="panel-b">
-          <button className="drop" type="button" onClick={onUpload}>
+          <button className="drop" type="button" onClick={onUpload} data-tour-id="upload-card">
             <span className="di">
               <Upload />
             </span>
             <p>拖入或点击上传券商文件</p>
-            <span>支持年度清单 / 月结单 · .xlsx .xls .csv .pdf</span>
+            <span>支持富途 Excel / 长桥 PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {files.map((file) => (
@@ -538,13 +715,20 @@ function Sidebar({
                 </span>
                 <span className="meta">
                   <b>{file.name}</b>
-                  <span>
-                    {brokerLabel(file.broker)} · {file.type} · {typeof file.rows === "number" ? `${file.rows} 行` : file.rows}
+                  <span className="file-summary">
+                    <span>{brokerLabel(file.broker)} · {file.type} · {typeof file.rows === "number" ? `${file.rows} 行` : file.rows}</span>
+                    <span className={`broker-confidence ${file.brokerConfidence ?? "low"}`} title={file.brokerReason}>
+                      {brokerConfidenceLabel(file.brokerConfidence)}
+                    </span>
                   </span>
                   <select className="broker-select" value={file.broker} onChange={(event) => onBrokerChange(file.id, event.target.value)}>
-                    <option value="futu">富途</option>
-                    <option value="longbridge">长桥</option>
+                    {BROKER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
+                  <span className="broker-reason">{file.brokerReason}</span>
                 </span>
                 <button className="file-remove" type="button" title="删除文件" onClick={() => onRemoveFile(file.id)}>
                   <Trash2 />
@@ -555,13 +739,12 @@ function Sidebar({
           </ul>
           <label className="field-label">
             <span>长桥 PDF 密码</span>
-            <input className="plain-input" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="可留空" />
+            <input className="plain-input" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="手机号后四位 + 身份证后四位" />
           </label>
-          <button className="btn primary full-btn" type="button" onClick={() => onAnalyze()} disabled={analysisStatus === "running"}>
+          <button className="btn primary full-btn" type="button" onClick={() => onAnalyze()} disabled={analysisStatus === "running"} data-tour-id="analyze-button">
             <Calculator /> {analysisStatus === "running" ? "解析中…" : "解析并计算"}
           </button>
-          {analysisError ? <div className="status-message error">{analysisError}</div> : null}
-          {analysisStatus === "done" ? <div className="status-message ok-msg">已按 2025 自然年生成 FIFO / ACB 两套结果。</div> : null}
+          {analysisStatus === "done" ? <div className="status-message ok-msg">已按 {year} 自然年生成 FIFO / ACB 两套结果。</div> : null}
         </div>
       </div>
 
@@ -617,6 +800,8 @@ function PnlTable({
   onManualCostChange,
   onSubmitManualCost,
   analysisStatus,
+  fx,
+  pendingCostFlashToken,
 }) {
   const [query, setQuery] = useState("");
   const [market, setMarket] = useState("all");
@@ -687,8 +872,16 @@ function PnlTable({
                     <td className={`r num pnl ${row.missingCost ? "" : classForNumber(row.pnlOriginal)}`}>
                       {row.missingCost ? `${row.currency} ${fmt(row.proceeds)}` : cnSigned(row.pnlOriginal)}
                     </td>
-                    <td className="r num muted">{(FX[row.market] ?? 1).toFixed(4)}</td>
-                    <td className={`r num pnl ${row.missingCost ? "pending-text" : classForNumber(row.rmb)}`}>{row.missingCost ? "待补成本" : cnSigned(row.rmb)}</td>
+                    <td className="r num muted">{(fx[row.market] ?? 1).toFixed(4)}</td>
+                    <td className={`r num pnl ${row.missingCost ? "pending-text" : classForNumber(row.rmb)}`}>
+                      {row.missingCost ? (
+                        <span key={`${row.key}-${pendingCostFlashToken}`} className={`pending-cost-label ${pendingCostFlashToken ? "pending-flash" : ""}`}>
+                          待补成本
+                        </span>
+                      ) : (
+                        cnSigned(row.rmb)
+                      )}
+                    </td>
                     <td className="c">
                       <span className="sw-wrap">
                         <button
@@ -833,7 +1026,7 @@ function PnlDetailRow({ row, idx, method, manualCosts, onManualCostChange, onSub
   );
 }
 
-function DividendsTable({ dividends }) {
+function DividendsTable({ dividends, fx }) {
   const rows = (dividends ?? []).map((dividend) => ({
         market: currencyToMarket(dividend.currency),
         code: dividend.symbol,
@@ -841,7 +1034,7 @@ function DividendsTable({ dividends }) {
         perShare: "-",
         withholding: dividend.taxWithheld ? `${fmt((dividend.taxWithheld / Math.max(dividend.grossAmount, 1)) * 100)}%` : "0%",
         netOriginal: `${dividend.currency} ${fmt(dividend.grossAmount - dividend.taxWithheld - dividend.fee)}`,
-        rmb: (dividend.grossAmount - dividend.taxWithheld - dividend.fee) * (FX[currencyToMarket(dividend.currency)] ?? 1),
+        rmb: (dividend.grossAmount - dividend.taxWithheld - dividend.fee) * (fx[currencyToMarket(dividend.currency)] ?? 1),
       }));
   const total = rows.reduce((sum, row) => sum + row.rmb, 0);
   return (
@@ -893,7 +1086,7 @@ function DividendsTable({ dividends }) {
   );
 }
 
-function TaxSummary({ summary }) {
+function TaxSummary({ summary, fx }) {
   const total = Math.abs(summary.capitalGain) + Math.abs(summary.dividend);
   const gainPct = total ? (Math.abs(summary.capitalGain) / total) * 100 : 0;
   const dividendPct = 100 - gainPct;
@@ -956,11 +1149,11 @@ function TaxSummary({ summary }) {
         <div className="legend">
           <div>
             <span className="sq hk-sq" />
-            USD / CNY <b>{FX.US.toFixed(4)}</b>
+            USD / CNY <b>{fx.US.toFixed(4)}</b>
           </div>
           <div>
             <span className="sq us-sq" />
-            HKD / CNY <b>{FX.HK.toFixed(4)}</b>
+            HKD / CNY <b>{fx.HK.toFixed(4)}</b>
           </div>
         </div>
       </div>
@@ -1014,12 +1207,12 @@ function ExcludedTable({ records, onRestore }) {
   );
 }
 
-function FxTable() {
+function FxTable({ fx }) {
   return (
     <>
       <div className="toolbar">
         <span className="tcount">
-          汇率来源 · <b>中国银行外汇牌价中间价</b> · 年末口径 {FX.date}
+          汇率来源 · <b>{fx.source}</b> · 年末口径 {fx.date}
         </span>
       </div>
       <div className="tbl-wrap">
@@ -1037,7 +1230,7 @@ function FxTable() {
             <tr>
               <td className="code-cell">USD / CNY</td>
               <td>美股盈亏 · 分红折算</td>
-              <td className="r num">{FX.US.toFixed(4)}</td>
+              <td className="r num">{fx.US.toFixed(4)}</td>
               <td className="r num">7.1957</td>
               <td className="c">
                 <span className="ccy">年末口径</span>
@@ -1046,7 +1239,7 @@ function FxTable() {
             <tr>
               <td className="code-cell">HKD / CNY</td>
               <td>港股盈亏 · 分红折算</td>
-              <td className="r num">{FX.HK.toFixed(4)}</td>
+              <td className="r num">{fx.HK.toFixed(4)}</td>
               <td className="r num">0.9216</td>
               <td className="c">
                 <span className="ccy">年末口径</span>
@@ -1081,7 +1274,6 @@ function Workbench({
   onBrokerChange,
   onAnalyze,
   analysisStatus,
-  analysisError,
   password,
   onPasswordChange,
   manualCosts,
@@ -1092,6 +1284,8 @@ function Workbench({
   onRestoreExcluded,
   excludedRowKeys,
   toggleRowExcluded,
+  fx,
+  pendingCostFlashToken,
 }) {
   const [tab, setTab] = useState("pnl");
   const tabs = [
@@ -1109,19 +1303,19 @@ function Workbench({
         <Kpis summary={summary} dividendCount={dividends.length} />
         <div className="grid">
           <Sidebar
+            year={year}
             files={files}
             onUpload={onUpload}
             onRemoveFile={onRemoveFile}
             onBrokerChange={onBrokerChange}
             onAnalyze={onAnalyze}
             analysisStatus={analysisStatus}
-            analysisError={analysisError}
             password={password}
             onPasswordChange={onPasswordChange}
             excludedRecords={excludedRecords}
             onRestoreExcluded={onRestoreExcluded}
           />
-          <section className="panel content-panel">
+          <section className="panel content-panel" data-tour-id={tab === "pnl" ? "pnl-details-section" : undefined}>
             <div className="tabs">
               {tabs.map(([key, label, count]) => (
                 <button key={key} type="button" className={tab === key ? "on" : ""} onClick={() => setTab(key)}>
@@ -1141,12 +1335,14 @@ function Workbench({
                 onManualCostChange={onManualCostChange}
                 onSubmitManualCost={onSubmitManualCost}
                 analysisStatus={analysisStatus}
+                fx={fx}
+                pendingCostFlashToken={pendingCostFlashToken}
               />
             ) : null}
-            {tab === "div" ? <DividendsTable dividends={dividends} /> : null}
-            {tab === "tax" ? <TaxSummary summary={summary} /> : null}
+            {tab === "div" ? <DividendsTable dividends={dividends} fx={fx} /> : null}
+            {tab === "tax" ? <TaxSummary summary={summary} fx={fx} /> : null}
             {tab === "excl" ? <ExcludedTable records={excludedRecords} onRestore={onRestoreExcluded} /> : null}
-            {tab === "fx" ? <FxTable /> : null}
+            {tab === "fx" ? <FxTable fx={fx} /> : null}
           </section>
         </div>
       </main>
@@ -1154,7 +1350,7 @@ function Workbench({
   );
 }
 
-function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, dividends, files }) {
+function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, dividends, files, fx }) {
   const [query, setQuery] = useState("");
   const [market, setMarket] = useState("all");
   const [side, setSide] = useState("all");
@@ -1191,8 +1387,8 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
         const last = item.quantity ? item.marketValue / item.quantity : 0;
         const cost = item.quantity && costBasis !== null ? costBasis / item.quantity : null;
         const unrealized = hasUnrealized ? item.unrealizedGainLoss : costBasis !== null ? item.marketValue - costBasis : null;
-        const rmb = unrealized === null ? null : unrealized * (FX[market] ?? 1);
-        const marketValue = item.marketValue * (FX[market] ?? 1);
+        const rmb = unrealized === null ? null : unrealized * (fx[market] ?? 1);
+        const marketValue = item.marketValue * (fx[market] ?? 1);
         return {
           market,
           code: item.symbol,
@@ -1210,7 +1406,7 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
       return enriched.map((item) => ({ ...item, weight: totalMarketValue ? (item.marketValue / totalMarketValue) * 100 : 0 }));
     }
     return [];
-  }, [openPositions]);
+  }, [fx, openPositions]);
   const hasPositionPnl = positions.some((item) => item.rmb !== null);
   const posTotal = positions.reduce((sum, item) => sum + (item.rmb ?? 0), 0);
   const filteredFlows = flows.filter((flow) => {
@@ -1381,17 +1577,20 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   );
 }
 
-function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, onCopyReport, copied }) {
+function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, onCopyReport, onExportCsv, copied, fx }) {
   const fifo = methodSummaries.fifo;
   const acb = methodSummaries.acb;
   const { best, other, isTie, saving } = bestCostMethod(methodSummaries);
-  const dividendNetRmb = dividendNetRmbFromDividends(dividends);
+  const dividendNetRmb = dividendNetRmbFromDividends(dividends, fx);
   const bestColClass = (id) => (!isTie && best.id === id ? "best" : "");
   const bestBadge = (id) => (!isTie && best.id === id ? <span className="badge">推荐</span> : null);
 
   return (
     <div className="stage">
       <div className="report-actions">
+        <button className="btn" type="button" onClick={onExportCsv}>
+          <Download /> 导出 CSV
+        </button>
         <button className="btn" type="button" onClick={onCopyReport}>
           <Copy /> {copied ? "已复制申报数字" : "复制申报数字"}
         </button>
@@ -1400,6 +1599,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         </button>
       </div>
       <div className="sheet">
+        <PublisherCredit className="report-publisher-top" />
         <div className="doc-head">
           <div>
             <h1>海外证券资本利得税 · 申报底稿</h1>
@@ -1502,7 +1702,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
           <Check />
           {isTie ? (
             <>
-              两种成本法税额一致。两种口径使用完全相同的成交流水，仅成本基准不同。
+              两种成本法税额一致。两种口径使用完全相同的成交流水，仅成本基准不同。申报时请保持同一种成本法，不能今年用FIFO，明年用ACB，否则可能引起税务核查。
             </>
           ) : (
             <>
@@ -1531,7 +1731,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
                 </td>
                 <td className={`r num ${classForNumber(fifo.byMarket[market])} ${bestColClass("fifo")}`}>{cnSigned(fifo.byMarket[market])}</td>
                 <td className={`r num ${classForNumber(acb.byMarket[market])} ${bestColClass("acb")}`}>{cnSigned(acb.byMarket[market])}</td>
-                <td className="r num muted">{FX[market].toFixed(4)}</td>
+                <td className="r num muted">{fx[market].toFixed(4)}</td>
               </tr>
             ))}
           </tbody>
@@ -1572,7 +1772,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
                   <td className="r num">
                     {dividend.currency} {fmt(net)}
                   </td>
-                  <td className="r num">{fmt(net * (FX[market] ?? 1))}</td>
+                  <td className="r num">{fmt(net * (fx[market] ?? 1))}</td>
                 </tr>
               );
             })}
@@ -1640,17 +1840,256 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
           <b>计算口径说明.</b> 本底稿按个人所得税「财产转让所得」<b>20% 税率</b> 预估。年度边界为自然年 1/1-12/31。FIFO 按先进先出匹配成本，ACB
           按持仓平均成本匹配。分红按税后净额折算为人民币。
           <div className="disc">免责声明：本工具结果仅供个人申报参考与自查，不构成税务、会计或法律意见。最终申报口径与税额请以主管税务机关要求及专业税务顾问意见为准。</div>
-          <div className="sign">
-            <div>
-              <div className="line">纳税人签字 / 日期</div>
-            </div>
-            <div>
-              <div className="line">复核 / 日期</div>
-            </div>
-          </div>
         </div>
+        <PublisherCredit className="report-publisher-bottom" />
       </div>
     </div>
+  );
+}
+
+const TOUR_STEPS = [
+  {
+    target: "upload-card",
+    title: "上传券商材料",
+    body: "从这里导入富途 Excel 年度报表或长桥 PDF 月结单。上传后系统会立即尝试判断券商和文件类型。",
+    images: [
+      {
+        src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
+        alt: "富途 App 年度报表入口示例",
+        caption: "富途：账户 > 年度报表",
+      },
+      {
+        src: `${ASSET_BASE}tour/longbridge-monthly-statement.jpg`,
+        alt: "长桥 App 月结单入口示例",
+        caption: "长桥：全部功能 > 结单查询",
+      },
+    ],
+  },
+  {
+    target: "broker-files-panel",
+    title: "确认券商",
+    body: "每个文件都会带着默认判断进入列表。若识别不准，可直接用文件旁的下拉框改成正确券商。",
+  },
+  {
+    target: "analyze-button",
+    title: "解析并计算",
+    body: "确认材料与 PDF 密码后，点击解析会生成 FIFO 和 ACB 两套结果，并标出缺成本或需复核的记录。",
+  },
+  {
+    target: "pnl-details-section",
+    title: "根据交易明细稍作验证",
+    body: "解析完成后先看盈亏明细，展开单只股票可以核对买入、卖出、成本和已实现盈亏是否符合券商记录。",
+    emphasis: "确认传入的数据中是否有跨年买入的标的，导致成本需要手动填写。若使用长桥券商，确认填入了当年所有有交易的月份。",
+  },
+  {
+    target: "method-selector",
+    title: "切换计算口径",
+    body: "这里可以在自然年 FIFO 与 ACB 之间切换，用同一份材料比较不同成本法下的税额。",
+  },
+  {
+    target: "report-nav",
+    title: "生成申报底稿",
+    body: "完成核对后进入申报报告页，可复制申报数字，也可以导出 PDF 留存。",
+  },
+];
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function ProjectIntroModal({ onStart, onClose }) {
+  return (
+    <div className="app-modal-backdrop" role="presentation">
+      <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+        <button className="modal-close" type="button" aria-label="关闭介绍" onClick={onClose}>
+          <X />
+        </button>
+        <TaxCheckMark className="intro-brand-mark" />
+        <h2 id="intro-title">TaxCheck 是什么</h2>
+        <p>
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥等券商。
+          <br />
+          <br />
+          <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>
+          <br />
+          <br />
+          本工具由公众号“<b>汤姆喵的奇妙旅行</b>”制作，还有更多的工具在公众号中，欢迎关注。
+        </p>
+        <div className="intro-points">
+          <span>富途 Excel 年度报表</span>
+          <span>长桥 PDF 月结单</span>
+          <span>申报数字与 PDF 底稿</span>
+        </div>
+        <div className="intro-actions">
+          <button className="btn" type="button" onClick={onClose}>
+            稍后再看
+          </button>
+          <button className="btn primary" type="button" onClick={onStart}>
+            开始引导 <ArrowRight />
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FormattedIssueText({ text }) {
+  return String(text ?? "")
+    .split(/(\*\*[^*]+\*\*)/g)
+    .map((part, index) => {
+      const strong = part.match(/^\*\*([^*]+)\*\*$/);
+      return strong ? <b key={index}>{strong[1]}</b> : <React.Fragment key={index}>{part}</React.Fragment>;
+    });
+}
+
+function AppIssueModal({ issue, onClose }) {
+  return (
+    <div className="app-modal-backdrop" role="presentation">
+      <section className="intro-modal year-issue-modal" role="dialog" aria-modal="true" aria-labelledby="app-issue-title">
+        <button className="modal-close" type="button" aria-label="关闭提醒" onClick={onClose}>
+          <X />
+        </button>
+        <div className={`intro-icon ${issue.severity === "info" ? "" : "warning-icon"}`}>
+          <AlertCircle />
+        </div>
+        <span className={`modal-kicker ${issue.severity}`}>{issueSeverityLabel(issue.severity)}</span>
+        <h2 id="app-issue-title">{issue.title}</h2>
+        <p>
+          <FormattedIssueText text={issue.detail} />
+        </p>
+        <div className="intro-actions">
+          <button className="btn" type="button" onClick={onClose}>
+            确认
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function GuidedTour({ stepIndex, steps, onNext, onBack, onClose }) {
+  const step = steps[stepIndex];
+  const [layout, setLayout] = useState(null);
+  const isLast = stepIndex === steps.length - 1;
+
+  useEffect(() => {
+    if (!step) return undefined;
+
+    function updateLayout() {
+      const element = document.querySelector(`[data-tour-id="${step.target}"]`);
+      if (!element) {
+        setLayout({ spotlight: null, card: null });
+        return;
+      }
+      const rect = element.getBoundingClientRect();
+      const padding = 8;
+      const cardWidth = step.images?.length ? Math.min(640, window.innerWidth - 32) : Math.min(376, window.innerWidth - 32);
+      const cardHeight = step.images?.length ? 500 : 210;
+      const gap = 18;
+      const canRight = rect.right + gap + cardWidth <= window.innerWidth - 16;
+      const canLeft = rect.left - gap - cardWidth >= 16;
+      const canBelow = rect.bottom + gap + cardHeight <= window.innerHeight - 16;
+      const canAbove = rect.top - gap - cardHeight >= 16;
+      let top = clamp(rect.top, 16, window.innerHeight - cardHeight - 16);
+      let left = clamp(rect.right + gap, 16, window.innerWidth - cardWidth - 16);
+
+      if (canRight) {
+        top = clamp(rect.top, 16, window.innerHeight - cardHeight - 16);
+        left = rect.right + gap;
+      } else if (canLeft) {
+        top = clamp(rect.top, 16, window.innerHeight - cardHeight - 16);
+        left = rect.left - gap - cardWidth;
+      } else if (canBelow) {
+        top = rect.bottom + gap;
+        left = clamp(rect.left + rect.width / 2 - cardWidth / 2, 16, window.innerWidth - cardWidth - 16);
+      } else if (canAbove) {
+        top = rect.top - gap - cardHeight;
+        left = clamp(rect.left + rect.width / 2 - cardWidth / 2, 16, window.innerWidth - cardWidth - 16);
+      } else {
+        top = 16;
+        left = clamp(rect.right + gap, 16, window.innerWidth - cardWidth - 16);
+      }
+      setLayout({
+        spotlight: {
+          top: Math.max(8, rect.top - padding),
+          left: Math.max(8, rect.left - padding),
+          width: Math.min(window.innerWidth - 16, rect.width + padding * 2),
+          height: Math.min(window.innerHeight - 16, rect.height + padding * 2),
+        },
+        card: {
+          top,
+          left,
+          width: cardWidth,
+        },
+      });
+    }
+
+    updateLayout();
+    window.addEventListener("resize", updateLayout);
+    window.addEventListener("scroll", updateLayout, true);
+    return () => {
+      window.removeEventListener("resize", updateLayout);
+      window.removeEventListener("scroll", updateLayout, true);
+    };
+  }, [step]);
+
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  if (!step) return null;
+
+  return (
+    <>
+      <div className="tour-click-catcher" role="presentation" onClick={onClose} />
+      {layout?.spotlight ? <div className="tour-spotlight" style={layout.spotlight} aria-hidden="true" /> : <div className="tour-fallback-scrim" aria-hidden="true" />}
+      <section className={`tour-card ${layout?.spotlight ? "" : "center"}`} style={layout?.card ?? undefined} role="dialog" aria-modal="true" aria-label="页面引导">
+        <div className="tour-head">
+          <span className="tour-step">
+            {stepIndex + 1} / {steps.length}
+          </span>
+          <button className="tour-x" type="button" aria-label="关闭引导" onClick={onClose}>
+            <X />
+          </button>
+        </div>
+        <h3>{step.title}</h3>
+        <p>
+          {step.body}
+          {step.emphasis ? (
+            <>
+              <b>{step.emphasis}</b>
+            </>
+          ) : null}
+        </p>
+        {step.images?.length ? (
+          <div className="tour-media-grid">
+            {step.images.map((image) => (
+              <figure className="tour-media" key={image.src}>
+                <img src={image.src} alt={image.alt} loading="lazy" />
+                <figcaption>{image.caption}</figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : null}
+        <div className="tour-progress" aria-hidden="true">
+          {steps.map((item, index) => (
+            <span key={item.target} className={index <= stepIndex ? "on" : ""} />
+          ))}
+        </div>
+        <div className="tour-actions">
+          <button className="btn" type="button" onClick={onBack} disabled={stepIndex === 0}>
+            <ArrowLeft /> 上一步
+          </button>
+          <button className="btn primary" type="button" onClick={onNext}>
+            {isLast ? "完成" : "下一步"} {!isLast ? <ArrowRight /> : null}
+          </button>
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -1665,10 +2104,16 @@ export default function App() {
   const [parsedInput, setParsedInput] = useState(null);
   const [analyses, setAnalyses] = useState(null);
   const [analysisStatus, setAnalysisStatus] = useState("idle");
-  const [analysisError, setAnalysisError] = useState("");
-  const [password, setPassword] = useState("15690339");
+  const [password, setPassword] = useState("");
   const [manualCosts, setManualCosts] = useState({});
   const [copied, setCopied] = useState(false);
+  const [showIntro, setShowIntro] = useState(true);
+  const [tourStep, setTourStep] = useState(-1);
+  const [dismissedIssueIds, setDismissedIssueIds] = useState(new Set());
+  const [manualIssues, setManualIssues] = useState([]);
+  const [activeIssue, setActiveIssue] = useState(null);
+  const [pendingCostFlashAfterIssues, setPendingCostFlashAfterIssues] = useState(false);
+  const [pendingCostFlashToken, setPendingCostFlashToken] = useState(0);
 
   useEffect(() => {
     if (!parsedInput) return;
@@ -1676,18 +2121,27 @@ export default function App() {
   }, [excludedRowKeys, parsedInput, year]);
 
   const currentAnalysis = analyses?.[methodId] ?? null;
+  const fx = useMemo(() => fxForTaxYear(year), [year]);
   const rows = useMemo(() => rowsFromAnalysis(currentAnalysis), [currentAnalysis]);
-  const summary = useMemo(() => summaryFromAnalysis(currentAnalysis), [currentAnalysis]);
+  const summary = useMemo(() => summaryFromAnalysis(currentAnalysis, fx), [currentAnalysis, fx]);
   const dividends = useMemo(() => dividendsFromAnalysis(currentAnalysis), [currentAnalysis]);
   const openPositions = useMemo(() => openPositionsFromAnalysis(currentAnalysis), [currentAnalysis]);
   const tradeActivities = useMemo(() => tradeActivitiesFromAnalysis(currentAnalysis), [currentAnalysis]);
   const realizedTrades = currentAnalysis?.realizedTrades ?? [];
+  const analysisIssues = useMemo(
+    () => (currentAnalysis?.issues ?? []).filter((issue) => issue.severity !== "blocking"),
+    [currentAnalysis],
+  );
+  const modalIssues = useMemo(
+    () => [...manualIssues, ...analysisIssues].filter((issue) => !dismissedIssueIds.has(issue.id)),
+    [analysisIssues, dismissedIssueIds, manualIssues],
+  );
   const methodSummaries = useMemo(
     () => ({
-      fifo: methodReportFromAnalysis(analyses?.fifo),
-      acb: methodReportFromAnalysis(analyses?.acb),
+      fifo: methodReportFromAnalysis(analyses?.fifo, fx),
+      acb: methodReportFromAnalysis(analyses?.acb, fx),
     }),
-    [analyses],
+    [analyses, fx],
   );
   const excludedRecords = useMemo(
     () =>
@@ -1697,26 +2151,111 @@ export default function App() {
     [excludedMeta, excludedRowKeys],
   );
 
+  useEffect(() => {
+    if (activeIssue || modalIssues.length === 0) return;
+    setActiveIssue(modalIssues[0]);
+  }, [activeIssue, modalIssues]);
+
+  useEffect(() => {
+    if (activeIssue || modalIssues.length > 0 || !pendingCostFlashAfterIssues) return undefined;
+    const timer = window.setTimeout(() => {
+      setPendingCostFlashToken(Date.now());
+      setPendingCostFlashAfterIssues(false);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [activeIssue, modalIssues.length, pendingCostFlashAfterIssues]);
+
+  function pushManualIssue(issue) {
+    setManualIssues((current) => [...current.filter((item) => item.id !== issue.id), issue]);
+    setDismissedIssueIds((current) => {
+      if (!current.has(issue.id)) return current;
+      const next = new Set(current);
+      next.delete(issue.id);
+      return next;
+    });
+  }
+
   function triggerUpload() {
     fileInputRef.current?.click();
   }
 
-  function handleFileInput(event) {
+  async function handleFileInput(event) {
     const incoming = Array.from(event.target.files ?? []);
     if (!incoming.length) return;
-    setFiles((current) => [
-      ...current,
-      ...incoming.map((file, idx) => ({
-        id: `${Date.now()}-${idx}-${file.name}`,
+    const timestamp = Date.now();
+    const scanned = await Promise.all(
+      incoming.map(async (file) => ({
+        file,
+        fingerprint: await fileFingerprint(file),
+      })),
+    );
+    const existingFingerprints = new Set(files.map((file) => file.fingerprint).filter(Boolean));
+    const seenFingerprints = new Set();
+    const accepted = [];
+    const duplicates = [];
+    for (const item of scanned) {
+      if (existingFingerprints.has(item.fingerprint) || seenFingerprints.has(item.fingerprint)) {
+        duplicates.push(item.file.name);
+        continue;
+      }
+      seenFingerprints.add(item.fingerprint);
+      accepted.push(item);
+    }
+
+    if (duplicates.length > 0) {
+      pushManualIssue({
+        id: `duplicate-upload-${timestamp}`,
+        severity: "warning",
+        title: "重复上传同一份报告",
+        detail: `以下文件已经在列表中或本次选择中重复出现：${duplicates.join("、")}。系统已跳过重复文件，请保留一份后再解析。`,
+        action: "upload",
+      });
+    }
+    if (accepted.length === 0) {
+      event.target.value = "";
+      return;
+    }
+
+    const pendingEntries = accepted.map(({ file, fingerprint }, idx) => {
+      const guess = baseBrokerGuess(file.name);
+      return {
+        id: `${timestamp}-${idx}-${file.name}`,
         name: file.name,
-        broker: guessBrokerId(file.name),
+        fingerprint,
+        size: file.size,
+        lastModified: file.lastModified,
+        broker: guess.broker,
+        brokerConfidence: "pending",
+        brokerReason: "正在根据文件内容确认券商。",
         type: guessFileType(file.name),
         rows: "待解析",
         status: "待解析",
         file,
-      })),
-    ]);
+        brokerTouched: false,
+      };
+    });
+    setFiles((current) => [...current, ...pendingEntries]);
     event.target.value = "";
+
+    const detected = await Promise.all(
+      accepted.map(async ({ file }) => ({
+        guess: await detectBrokerFromFile(file),
+      })),
+    );
+
+    setFiles((current) =>
+      current.map((entry) => {
+        const index = pendingEntries.findIndex((item) => item.id === entry.id);
+        if (index === -1 || entry.brokerTouched) return entry;
+        const guess = detected[index]?.guess ?? baseBrokerGuess(entry.name);
+        return {
+          ...entry,
+          broker: guess.broker,
+          brokerConfidence: guess.confidence,
+          brokerReason: guess.reason,
+        };
+      }),
+    );
   }
 
   function removeFile(fileId) {
@@ -1724,7 +2263,20 @@ export default function App() {
   }
 
   function updateBroker(fileId, broker) {
-    setFiles((current) => current.map((file) => (file.id === fileId ? { ...file, broker } : file)));
+    setFiles((current) =>
+      current.map((file) =>
+        file.id === fileId
+          ? {
+              ...file,
+              broker,
+              brokerTouched: true,
+              brokerConfidence: "manual",
+              brokerReason: `已由用户手动选择为${brokerLabel(broker)}；解析时会按该券商处理。`,
+              status: file.status === "已解析" ? "待重算" : file.status,
+            }
+          : file,
+      ),
+    );
   }
 
   function restoreExcluded(key) {
@@ -1769,7 +2321,6 @@ export default function App() {
 
   async function runAnalysis(manualCostOverrides = {}) {
     setAnalysisStatus("running");
-    setAnalysisError("");
     try {
       const effectiveManualCosts = { ...manualCosts, ...manualCostOverrides };
       const manualCostInputs = Object.entries(effectiveManualCosts)
@@ -1795,8 +2346,14 @@ export default function App() {
     } catch (error) {
       const message =
         error instanceof ParserValidationError || error instanceof Error ? error.message : "解析失败，请检查文件格式和券商选择。";
-      setAnalysisError(message);
       setAnalysisStatus("error");
+      pushManualIssue({
+        id: `analysis-error-${Date.now()}`,
+        severity: "blocking",
+        title: "解析失败",
+        detail: message,
+        action: "upload",
+      });
     }
   }
 
@@ -1814,7 +2371,7 @@ export default function App() {
       row.currency,
       methodById(methodId).label,
       row.missingCost ? "待补成本" : row.pnlOriginal.toFixed(2),
-      (FX[row.market] ?? 1).toFixed(4),
+      (fx[row.market] ?? 1).toFixed(4),
       row.missingCost ? "" : row.rmb.toFixed(2),
       excludedRowKeys.has(row.key) ? "否" : "是",
     ]);
@@ -1839,7 +2396,7 @@ export default function App() {
       "适用税率：20%",
       `应缴资本利得税：¥${fmt(best.summary.tax)}`,
       isTie ? "自然年 FIFO 与自然年 ACB 税额一致" : `对比${other.label}应缴 ¥${fmt(other.summary.tax)}，可节省 ¥${fmt(saving)}`,
-      `年末汇率：USD ${FX.US.toFixed(4)} / HKD ${FX.HK.toFixed(4)}（${FX.date} ${FX.source}）`,
+      `年末汇率：USD ${fx.US.toFixed(4)} / HKD ${fx.HK.toFixed(4)}（${fx.date} ${fx.source}）`,
     ].join("\n");
     navigator.clipboard?.writeText(text).finally(() => {
       setCopied(true);
@@ -1847,10 +2404,44 @@ export default function App() {
     });
   }
 
+  function startTour() {
+    setShowIntro(false);
+    setPage("workbench");
+    setTourStep(0);
+  }
+
+  function closeTour() {
+    setTourStep(-1);
+  }
+
+  function closeActiveIssue() {
+    const shouldFlashPendingCost =
+      String(activeIssue?.id ?? "").includes("cost-gap") || String(activeIssue?.detail ?? "").includes("待补成本");
+    if (activeIssue?.id) {
+      setDismissedIssueIds((current) => {
+        const next = new Set(current);
+        next.add(activeIssue.id);
+        return next;
+      });
+    }
+    if (shouldFlashPendingCost) {
+      setPendingCostFlashAfterIssues(true);
+    }
+    setActiveIssue(null);
+  }
+
+  function nextTourStep() {
+    setTourStep((current) => (current >= TOUR_STEPS.length - 1 ? -1 : current + 1));
+  }
+
+  function previousTourStep() {
+    setTourStep((current) => Math.max(0, current - 1));
+  }
+
   return (
     <>
-      <input className="hidden-input" ref={fileInputRef} type="file" multiple accept=".xlsx,.xls,.csv,.pdf" onChange={handleFileInput} />
-      <TopBar activePage={page} onNavigate={setPage} onUpload={triggerUpload} onExportCsv={exportCsv} />
+      <input className="hidden-input" ref={fileInputRef} type="file" multiple accept=".xlsx,.xls,.pdf" onChange={handleFileInput} />
+      <TopBar activePage={page} onNavigate={setPage} />
       {page === "workbench" ? (
         <Workbench
           year={year}
@@ -1865,7 +2456,6 @@ export default function App() {
           onBrokerChange={updateBroker}
           onAnalyze={runAnalysis}
           analysisStatus={analysisStatus}
-          analysisError={analysisError}
           password={password}
           onPasswordChange={setPassword}
           manualCosts={manualCosts}
@@ -1876,6 +2466,8 @@ export default function App() {
           onRestoreExcluded={restoreExcluded}
           excludedRowKeys={excludedRowKeys}
           toggleRowExcluded={toggleRowExcluded}
+          fx={fx}
+          pendingCostFlashToken={pendingCostFlashToken}
         />
       ) : null}
       {page === "holdings" ? (
@@ -1886,6 +2478,7 @@ export default function App() {
           realizedTrades={realizedTrades}
           dividends={dividends}
           files={files}
+          fx={fx}
         />
       ) : null}
       {page === "report" ? (
@@ -1896,9 +2489,14 @@ export default function App() {
           files={files}
           dividends={dividends}
           onCopyReport={copyReport}
+          onExportCsv={exportCsv}
           copied={copied}
+          fx={fx}
         />
       ) : null}
+      {!showIntro && activeIssue ? <AppIssueModal issue={activeIssue} onClose={closeActiveIssue} /> : null}
+      {showIntro ? <ProjectIntroModal onStart={startTour} onClose={() => setShowIntro(false)} /> : null}
+      {tourStep >= 0 ? <GuidedTour stepIndex={tourStep} steps={TOUR_STEPS} onNext={nextTourStep} onBack={previousTourStep} onClose={closeTour} /> : null}
     </>
   );
 }

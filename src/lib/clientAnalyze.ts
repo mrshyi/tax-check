@@ -1,4 +1,5 @@
 import { analyzeTaxScenarioInput, mergeParsedInputs } from "@/lib/tax/calculator";
+import { taxConfigForYear } from "@/lib/tax/config";
 import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
 import { parseLongbridgePdfs } from "@/lib/parsers/longbridge";
 import { ParserValidationError } from "@/lib/parsers/common";
@@ -10,6 +11,7 @@ export interface UploadFileEntry {
   id: string;
   name: string;
   broker: BrokerId;
+  fingerprint?: string;
   file?: File;
 }
 
@@ -46,15 +48,55 @@ function filterByTaxYear(input: ParsedInput, taxYear: number): ParsedInput {
   };
 }
 
+function issueDateYears(input: ParsedInput) {
+  const years = [
+    ...input.tradeActivities.map((activity) => activity.date),
+    ...input.realizedTrades.map((trade) => trade.sellDate),
+    ...input.dividends.map((dividend) => dividend.date),
+    ...input.openPositions.map((position) => position.asOf),
+    ...input.costBasisRequests.map((request) => request.sellDate),
+  ]
+    .map((date) => Number(String(date ?? "").slice(0, 4)))
+    .filter((year) => Number.isFinite(year) && year >= 2000);
+  return Array.from(new Set(years)).sort((a, b) => a - b);
+}
+
+function withTaxYearIssues(input: ParsedInput, taxYear: number): ParsedInput {
+  const years = issueDateYears(input);
+  const otherYears = years.filter((year) => year !== taxYear);
+  if (otherYears.length === 0) return input;
+
+  const hasSelectedYear = years.includes(taxYear);
+  const issue = hasSelectedYear
+    ? {
+        id: `${taxYear}-mixed-report-years`,
+        severity: "info" as const,
+        title: "导入了跨年成本材料",
+        detail: `当前选择 ${taxYear} 纳税年度，导入材料还包含 ${otherYears.join("、")} 年记录。系统会用较早年度的买入/转入记录补充成本，但盈亏明细和税额只展示、计算 ${taxYear} 年的卖出与分红。`,
+      }
+    : {
+        id: `${taxYear}-report-year-mismatch`,
+        severity: "warning" as const,
+        title: "导入材料年份与纳税年度不一致",
+        detail: `当前选择 ${taxYear} 纳税年度，但导入材料只识别到 ${otherYears.join("、")} 年记录。系统会继续按 ${taxYear} 年计算，非本年度的卖出不会进入盈亏明细；若这些材料只是为了补充跨年成本，请同时导入 ${taxYear} 年有卖出/分红的报告。`,
+      };
+
+  return {
+    ...input,
+    issues: [...input.issues, issue],
+  };
+}
+
 export function recomputeAnalyses(
   parsedInput: ParsedInput,
   taxYear: number,
   excludedKeys: Set<string>,
 ): Record<CostBasisMethod, TaxAnalysis> {
-  const scoped = filterByTaxYear(applyExclusions(parsedInput, excludedKeys), taxYear);
+  const scoped = filterByTaxYear(applyExclusions(withTaxYearIssues(parsedInput, taxYear), excludedKeys), taxYear);
+  const config = taxConfigForYear(taxYear);
   return {
-    fifo: analyzeTaxScenarioInput(scoped, taxYear, "fifo"),
-    acb: analyzeTaxScenarioInput(scoped, taxYear, "acb"),
+    fifo: analyzeTaxScenarioInput(scoped, taxYear, "fifo", config),
+    acb: analyzeTaxScenarioInput(scoped, taxYear, "acb", config),
   };
 }
 
@@ -68,6 +110,17 @@ export async function analyzeUploadedFiles(options: {
   const realFiles = options.files.filter((entry) => entry.file);
   if (realFiles.length === 0) {
     throw new ParserValidationError("请先上传至少一份券商文件。");
+  }
+
+  const seenFiles = new Map<string, string>();
+  for (const entry of realFiles) {
+    if (!entry.file) continue;
+    const key = entry.fingerprint ?? `${entry.file.name}:${entry.file.size}:${entry.file.lastModified}`;
+    const existing = seenFiles.get(key);
+    if (existing) {
+      throw new ParserValidationError(`重复上传同一份报告：${existing} 与 ${entry.file.name}。请删除重复文件后再解析。`, entry.file.name);
+    }
+    seenFiles.set(key, entry.file.name);
   }
 
   const futuFiles: Array<{ name: string; data: ArrayBuffer }> = [];
@@ -92,7 +145,7 @@ export async function analyzeUploadedFiles(options: {
 
   const inputs: ParsedInput[] = [];
   if (futuFiles.length > 0) {
-    inputs.push(parseFutuWorkbooks(futuFiles, options.manualCosts ?? []));
+    inputs.push(parseFutuWorkbooks(futuFiles, options.manualCosts ?? [], options.taxYear));
   }
   if (longbridgeFiles.length > 0) {
     const parsed = await parseLongbridgePdfs(longbridgeFiles, options.password);

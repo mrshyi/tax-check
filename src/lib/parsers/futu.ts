@@ -133,7 +133,10 @@ function readRows(workbook: XLSX.WorkBook, sheetName: string) {
 function validateWorkbook(fileName: string, workbook: XLSX.WorkBook) {
   const missingSheets = REQUIRED_SHEETS.filter((sheetName) => !workbook.Sheets[sheetName]);
   if (missingSheets.length > 0) {
-    throw new ParserValidationError(`富途文件缺少工作表：${missingSheets.join("、")}`, fileName);
+    throw new ParserValidationError(
+      `富途只支持“年度报表”Excel。${fileName} 不是需要的文件，请删除后重新解析。`,
+      fileName,
+    );
   }
 
   for (const [sheetName, requiredHeaders] of Object.entries(REQUIRED_HEADERS)) {
@@ -141,7 +144,10 @@ function validateWorkbook(fileName: string, workbook: XLSX.WorkBook) {
     const headers = new Set((rows[0] ?? []).map((header) => String(header ?? "")));
     const missingHeaders = requiredHeaders.filter((header) => !headers.has(header));
     if (missingHeaders.length > 0) {
-      throw new ParserValidationError(`${sheetName} 缺少列：${missingHeaders.join("、")}`, fileName);
+      throw new ParserValidationError(
+        `富途只支持“年度报表”Excel。${fileName} 不是需要的文件，请删除后重新解析。`,
+        fileName,
+      );
     }
   }
 }
@@ -567,7 +573,7 @@ function buildRealizedTrades(
       id: `futu-${targetYear}-${item.symbol}-cost-gap`,
       severity: "warning",
       title: `${item.symbol} 历史成本缺失`,
-      detail: `目标年度卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；相关卖出未计入资本利得，需要补充更早年度记录或手动成本。`,
+      detail: `目标年度卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；相关卖出未计入资本利得，需要补充更早年度记录或手动在 **盈亏明细-待补成本** 中添加成本。`,
       source: item.source,
     });
   }
@@ -585,7 +591,7 @@ function manualCostMap(manualCosts: ManualCostInput[] = []) {
   return costs;
 }
 
-function parseOpenPositions(contexts: WorkbookContext[], targetYear: number): OpenPosition[] {
+function parseOpenPositions(contexts: WorkbookContext[], targetYear?: number): OpenPosition[] {
   const positions = new Map<string, OpenPosition>();
 
   for (const context of contexts) {
@@ -601,12 +607,14 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear: number): Op
       const price = asNumber(row["价格"]);
       const multiplier = asNumber(row["乘数"]) || 1;
       const marketValue = asNumber(row["市值"]) || quantity * price * multiplier;
+      const positionYear = Number(asOf.slice(0, 4));
       if (!periodType.includes("期末")) continue;
       if (category && category !== "证券") continue;
-      if (!asOf.startsWith(String(targetYear)) || !symbol || quantity <= 0) continue;
+      if (targetYear && !asOf.startsWith(String(targetYear))) continue;
+      if (!symbol || quantity <= 0 || !Number.isFinite(positionYear)) continue;
 
       const currency = asCurrency(row["币种"]);
-      const key = `${currency}::${symbol}`;
+      const key = `${positionYear}::${currency}::${symbol}`;
       const existing = positions.get(key);
       if (existing) {
         existing.quantity += quantity;
@@ -615,7 +623,7 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear: number): Op
       }
 
       positions.set(key, {
-        id: `futu-open-${targetYear}-${currency}-${symbol}`,
+        id: `futu-open-${positionYear}-${currency}-${symbol}`,
         broker: "富途",
         asOf,
         market: marketName(row["交易所/市场"]),
@@ -633,7 +641,7 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear: number): Op
   return Array.from(positions.values());
 }
 
-export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCostInput[] = []): ParsedInput {
+export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCostInput[] = [], taxYear?: number): ParsedInput {
   const parsed = emptyParsedInput();
   const contexts = files.map((file) => {
     const workbook = XLSX.read(file.data, { type: "array", cellDates: false });
@@ -647,20 +655,20 @@ export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCo
 
   if (contexts.length === 0) return parsed;
 
-  const targetYear = Math.max(...contexts.map((context) => context.year));
+  const targetYear = taxYear ?? Math.max(...contexts.map((context) => context.year));
   const events = parseFutuEvents(contexts);
   const realized = buildRealizedTrades(events, targetYear, manualCostMap(manualCosts));
 
   parsed.realizedTrades.push(...realized.trades);
   parsed.tradeActivities.push(...buildTradeActivities(events));
-  parsed.dividends.push(...parseDividends(contexts).filter((dividend) => dividend.date.startsWith(String(targetYear))));
-  parsed.openPositions.push(...parseOpenPositions(contexts, targetYear));
+  parsed.dividends.push(...parseDividends(contexts));
+  parsed.openPositions.push(...parseOpenPositions(contexts));
   parsed.issues.push(...realized.issues);
   parsed.costBasisRequests.push(...realized.costBasisRequests);
 
   return parsed;
 }
 
-export function parseFutuWorkbook(fileName: string, buffer: ArrayBuffer): ParsedInput {
-  return parseFutuWorkbooks([{ name: fileName, data: buffer }]);
+export function parseFutuWorkbook(fileName: string, buffer: ArrayBuffer, taxYear?: number): ParsedInput {
+  return parseFutuWorkbooks([{ name: fileName, data: buffer }], [], taxYear);
 }

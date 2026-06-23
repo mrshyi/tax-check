@@ -1,11 +1,24 @@
+import { TAX_YEAR_FX_RATES } from "./lib/tax/config";
+
 export const TAX_YEAR = 2025;
 
-export const FX = {
-  HK: 0.90322,
-  US: 7.0288,
-  date: "2025-12-31",
-  source: "中国银行中间价",
-};
+export const FX_BY_YEAR = Object.fromEntries(
+  Object.entries(TAX_YEAR_FX_RATES).map(([year, item]) => [
+    Number(year),
+    {
+      HK: item.fxRates.HKD,
+      US: item.fxRates.USD,
+      date: item.date,
+      source: item.source,
+    },
+  ]),
+);
+
+export function fxForTaxYear(year) {
+  return FX_BY_YEAR[year] ?? FX_BY_YEAR[TAX_YEAR];
+}
+
+export const FX = fxForTaxYear(TAX_YEAR);
 
 export const TAX_RATE = 0.2;
 export const DIVIDEND_RMB = 1142.91;

@@ -282,8 +282,8 @@ function replayScenario(
   };
 }
 
-function buildTaxScenarios(input: ParsedInput, config: TaxConfig): TaxScenarioSummary[] {
-  const targetYear = maxActivityYear(input);
+function buildTaxScenarios(input: ParsedInput, config: TaxConfig, selectedYear?: number): TaxScenarioSummary[] {
+  const targetYear = selectedYear ?? maxActivityYear(input);
   return taxWindows(targetYear).flatMap((window) => {
     return (["fifo", "acb"] as const).map((method) => {
       const result = replayScenario(input, window, method, config);
@@ -469,24 +469,13 @@ export function analyzeTaxScenarioInput(
     ...input,
     realizedTrades: scenario.trades,
     dividends,
+    openPositions: input.openPositions.filter((position) => !position.asOf || position.asOf.startsWith(String(targetYear))),
+    costBasisRequests: input.costBasisRequests.filter((request) => inWindow(request.sellDate, window)),
   };
   const analysis = analyzeTaxInput(scopedInput, config);
   return {
     ...analysis,
-    taxScenarios: buildTaxScenarios(input, config),
-    issues: [
-      ...analysis.issues,
-      ...(scenario.missingCostIssueCount > 0
-        ? [
-            {
-              id: `${targetYear}-${costBasisMethod}-missing-cost`,
-              severity: "warning" as const,
-              title: "成本数据不足",
-              detail: `当前 ${costBasisMethod.toUpperCase()} 口径有 ${scenario.missingCostIssueCount} 笔卖出无法完成成本匹配，需补充更早年度记录或手动成本。`,
-            },
-          ]
-        : []),
-    ],
+    taxScenarios: buildTaxScenarios(input, config, targetYear),
   };
 }
 
