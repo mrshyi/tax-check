@@ -374,7 +374,7 @@ button {
   border-radius: var(--r);
   padding: 18px 20px;
   box-shadow: var(--shadow-card);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .kpi::before {
@@ -435,6 +435,113 @@ button {
   color: var(--muted);
   font-weight: 500;
   line-height: 1.35;
+}
+
+.k-label-with-guide {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tax-form-guide {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  z-index: 8;
+}
+
+.tax-form-guide-trigger {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--kpi-accent, var(--accent-ink));
+  transition: 0.15s;
+}
+
+.tax-form-guide-trigger:hover,
+.tax-form-guide-trigger:focus-visible {
+  border-color: var(--kpi-accent, var(--accent));
+  background: var(--kpi-icon-bg, var(--accent-soft));
+}
+
+.tax-form-guide-trigger svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tax-form-guide-panel {
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 0;
+  width: min(520px, calc(100vw - 64px));
+  max-height: min(72vh, 620px);
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px oklch(30% 0.06 256 / 0.2);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity 0.14s,
+    transform 0.14s,
+    visibility 0.14s;
+  z-index: 40;
+}
+
+.tax-form-guide:hover .tax-form-guide-panel,
+.tax-form-guide:focus-within .tax-form-guide-panel {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.kpi:hover,
+.kpi:focus-within {
+  z-index: 30;
+}
+
+.tax-form-guide-copy {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tax-form-guide-copy b {
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.tax-form-guide-images {
+  display: grid;
+  gap: 8px;
+}
+
+.tax-form-guide-images img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.k-foot-guide-text {
+  white-space: nowrap;
 }
 
 .kpi .k-ic {
@@ -762,15 +869,17 @@ button {
 
 .btn:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.72;
   box-shadow: none;
   filter: grayscale(0.25) saturate(0.72);
 }
 
 .btn.primary:disabled {
-  background: var(--surface-2);
-  color: var(--faint);
-  border-color: var(--border-2);
+  opacity: 1;
+  background: oklch(86% 0.018 256);
+  color: oklch(49% 0.035 256);
+  border-color: oklch(78% 0.025 256);
+  box-shadow: none;
 }
 
 .status-message {

@@ -472,6 +472,36 @@ const BROKER_OPTIONS = [
 const TAX_YEAR_OPTIONS = [2021, 2022, 2023, 2024, 2025];
 const PUBLISHER_NAME = "汤姆喵的奇妙旅行";
 const ASSET_BASE = import.meta.env.BASE_URL;
+const TAX_FORM_GUIDES = {
+  capital: [
+    {
+      src: `${ASSET_BASE}tax-form-guides/capital-transfer.jpg`,
+      alt: "个人所得税网站财产转让所得应纳税所得额填写位置",
+    },
+  ],
+  dividend: [
+    {
+      src: `${ASSET_BASE}tax-form-guides/dividend-income.jpg`,
+      alt: "个人所得税网站利息股息红利所得应纳税所得额填写位置",
+    },
+  ],
+  usDividend: [
+    {
+      src: `${ASSET_BASE}tax-form-guides/foreign-credit-summary.jpg`,
+      alt: "个人所得税网站境外所得已纳所得税抵免额位置",
+    },
+    {
+      src: `${ASSET_BASE}tax-form-guides/foreign-income-detail.jpg`,
+      alt: "个人所得税网站本年度各国可抵免明细其他分类所得填写位置",
+    },
+  ],
+  foreignTaxPaid: [
+    {
+      src: `${ASSET_BASE}tax-form-guides/foreign-tax-paid-edit.jpg`,
+      alt: "个人所得税网站本年境外已纳税额填写位置",
+    },
+  ],
+};
 
 const FUTU_SHEET_MARKERS = ["账户信息", "证券-持仓总览", "证券-交易流水", "证券-资产进出", "证券-资金进出"];
 const FUTU_TEXT_MARKERS = ["富途", "futu", "moomoo", "牛牛号", "账户号码"];
@@ -831,13 +861,41 @@ function ContextBar({ year, setYear, methodId, setMethodId, files, symbolCount }
   );
 }
 
+function TaxFormGuideTip({ title, note, images }) {
+  return (
+    <span className="tax-form-guide">
+      <button className="tax-form-guide-trigger" type="button" aria-label={`${title}填写位置`}>
+        <Info />
+      </button>
+      <span className="tax-form-guide-panel" role="tooltip">
+        <span className="tax-form-guide-copy">
+          <b>{title}</b>
+          <span>{note}</span>
+        </span>
+        <span className="tax-form-guide-images">
+          {images.map((image) => (
+            <img key={image.src} src={image.src} alt={image.alt} loading="lazy" />
+          ))}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 function Kpis({ summary }) {
   const taxBeforeCredit = (summary.capitalTaxBase + summary.dividendTaxBase) * TAX_RATE;
   return (
     <section className="kpis">
       <div className="kpi kpi-capital">
         <div className="k-top">
-          <span className="k-label">财产转让所得应纳税所得额</span>
+          <span className="k-label-with-guide">
+            <span className="k-label">财产转让所得应纳税所得额</span>
+            <TaxFormGuideTip
+              title="财产转让所得应纳税所得额"
+              note="在个人所得税网站「财产转让所得应纳税额」模块，填写项目「财产转让所得应纳税所得额」。"
+              images={TAX_FORM_GUIDES.capital}
+            />
+          </span>
           <span className="k-ic">
             <TrendingUp />
           </span>
@@ -850,7 +908,14 @@ function Kpis({ summary }) {
 
       <div className="kpi kpi-income">
         <div className="k-top">
-          <span className="k-label">利息、股息、红利所得应纳税所得额</span>
+          <span className="k-label-with-guide">
+            <span className="k-label">利息、股息、红利所得应纳税所得额</span>
+            <TaxFormGuideTip
+              title="利息、股息、红利所得应纳税所得额"
+              note="在个人所得税网站「利息、股息、红利所得应纳税额」模块，填写项目「利息、股息、红利所得应纳税所得额」。"
+              images={TAX_FORM_GUIDES.dividend}
+            />
+          </span>
           <span className="k-ic">
             <Square />
           </span>
@@ -863,13 +928,27 @@ function Kpis({ summary }) {
 
       <div className="kpi kpi-us-dividend">
         <div className="k-top">
-          <span className="k-label">美股分红应纳税所得额</span>
+          <span className="k-label-with-guide">
+            <span className="k-label">美股分红应纳税所得额</span>
+            <TaxFormGuideTip
+              title="美股分红应纳税所得额"
+              note="在「境外所得抵扣」中进入「其他分类所得」，新增美国记录，所得项目选择「利息、股息、红利所得」，填入美股分红应纳税所得额。"
+              images={TAX_FORM_GUIDES.usDividend}
+            />
+          </span>
           <span className="k-ic">
             <CreditCard />
           </span>
         </div>
         <div className="k-val">{fmt(summary.usDividendTaxBase)}</div>
-        <div className="k-foot">海外已纳税额 {fmt(summary.usDividendWithholdingCredit)}</div>
+        <div className="k-foot">
+          <span className="k-foot-guide-text">海外已纳税额 {fmt(summary.usDividendWithholdingCredit)}</span>
+          <TaxFormGuideTip
+            title="海外已纳税额"
+            note="在抵免额编辑弹窗中，填写「本年境外已纳税额」；系统会自动带出「本年抵免额」。"
+            images={TAX_FORM_GUIDES.foreignTaxPaid}
+          />
+        </div>
       </div>
 
       <div className="kpi kpi-tax-due">
@@ -2052,8 +2131,8 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
         <button className="btn" type="button" onClick={onCopyReport}>
           <Copy /> {copied ? "已复制申报数字" : "复制申报数字"}
         </button>
-        <button className="btn primary" type="button" onClick={onExportPdf}>
-          <Printer /> 导出 PDF
+        <button className="btn primary" type="button" onClick={onExportPdf} title="打开打印面板后，目标打印机选择「另存为 PDF」保存">
+          <Printer /> 保存为 PDF
         </button>
       </div>
       <div className="sheet">
