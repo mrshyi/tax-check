@@ -7,7 +7,7 @@ import { taxConfigForYear } from "@/lib/tax/config";
 import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
 import { parseLongbridgePdfs } from "@/lib/parsers/longbridge";
 import { ParserValidationError } from "@/lib/parsers/common";
-import type { CostBasisCorrection, CostBasisMethod, ParsedInput, RealizedTrade, TaxAnalysis } from "@/lib/tax/types";
+import type { CostBasisCorrection, CostBasisMethod, ParsedInput, TaxAnalysis } from "@/lib/tax/types";
 
 export type BrokerId = "futu" | "longbridge";
 
@@ -22,25 +22,6 @@ export interface UploadFileEntry {
 export interface AnalysisResult {
   parsedInput: ParsedInput;
   byMethod: Record<CostBasisMethod, TaxAnalysis>;
-}
-
-function exclusionKey(trade: Pick<RealizedTrade, "broker" | "currency" | "symbol">) {
-  return `${trade.broker}::${trade.currency}::${trade.symbol}`;
-}
-
-function applyExclusions(input: ParsedInput, excludedKeys: Set<string>): ParsedInput {
-  if (excludedKeys.size === 0) return input;
-  return {
-    ...input,
-    realizedTrades: input.realizedTrades.map((trade) => {
-      if (!excludedKeys.has(exclusionKey(trade))) return trade;
-      return {
-        ...trade,
-        excluded: true,
-        exclusionReason: "用户在页面选择剔除该标的。",
-      };
-    }),
-  };
 }
 
 function filterByTaxYear(input: ParsedInput, taxYear: number): ParsedInput {
@@ -94,10 +75,9 @@ function withTaxYearIssues(input: ParsedInput, taxYear: number): ParsedInput {
 export function recomputeAnalyses(
   parsedInput: ParsedInput,
   taxYear: number,
-  excludedKeys: Set<string>,
   costCorrections: CostBasisCorrection[] = [],
 ): Record<CostBasisMethod, TaxAnalysis> {
-  const scoped = filterByTaxYear(applyExclusions(withTaxYearIssues(parsedInput, taxYear), excludedKeys), taxYear);
+  const scoped = filterByTaxYear(withTaxYearIssues(parsedInput, taxYear), taxYear);
   const config = taxConfigForYear(taxYear);
   return {
     fifo: analyzeTaxScenarioInput(scoped, taxYear, "fifo", config, costCorrections),
@@ -113,7 +93,6 @@ export async function analyzeUploadedFiles(options: {
   password?: string;
   manualCosts?: ManualCostInput[];
   costCorrections?: CostBasisCorrection[];
-  excludedKeys?: Set<string>;
 }): Promise<AnalysisResult> {
   const realFiles = options.files.filter((entry) => entry.file);
   if (realFiles.length === 0) {
@@ -170,15 +149,6 @@ export async function analyzeUploadedFiles(options: {
   const parsedInput = mergeParsedInputs(inputs);
   return {
     parsedInput,
-    byMethod: recomputeAnalyses(
-      parsedInput,
-      options.taxYear,
-      options.excludedKeys ?? new Set(),
-      options.costCorrections ?? [],
-    ),
+    byMethod: recomputeAnalyses(parsedInput, options.taxYear, options.costCorrections ?? []),
   };
-}
-
-export function toExclusionKey(row: Pick<RealizedTrade, "broker" | "currency" | "symbol">) {
-  return exclusionKey(row);
 }

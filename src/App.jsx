@@ -8,7 +8,6 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  CircleSlash,
   Copy,
   CreditCard,
   DollarSign,
@@ -16,6 +15,7 @@ import {
   FileText,
   Info,
   Megaphone,
+  MessageCircle,
   Monitor,
   Pencil,
   Printer,
@@ -103,8 +103,8 @@ function computeRows(methodId) {
   });
 }
 
-function summarize(rows, excludedRowKeys) {
-  const capitalGain = rows.reduce((sum, row) => (excludedRowKeys.has(row.key) ? sum : sum + row.rmb), 0);
+function summarize(rows) {
+  const capitalGain = rows.reduce((sum, row) => sum + row.rmb, 0);
   const capitalTaxBase = Math.max(capitalGain, 0);
   const taxable = capitalTaxBase + DIVIDEND_RMB;
   return {
@@ -113,9 +113,12 @@ function summarize(rows, excludedRowKeys) {
     dividend: DIVIDEND_RMB,
     dividendTaxBase: DIVIDEND_RMB,
     dividendWithholdingCredit: 0,
+    usDividendTaxBase: 0,
+    usDividendWithholdingCredit: 0,
+    usDividendNet: 0,
     taxable,
     tax: taxable * TAX_RATE,
-    includedCount: rows.filter((row) => !excludedRowKeys.has(row.key)).length,
+    includedCount: rows.length,
   };
 }
 
@@ -126,6 +129,9 @@ function emptySummary() {
     dividend: 0,
     dividendTaxBase: 0,
     dividendWithholdingCredit: 0,
+    usDividendTaxBase: 0,
+    usDividendWithholdingCredit: 0,
+    usDividendNet: 0,
     taxable: 0,
     tax: 0,
     includedCount: 0,
@@ -144,14 +150,37 @@ function dividendNetRmbFromDividends(dividends, fx = FX) {
   }, 0);
 }
 
+function dividendTaxBaseRmbFromDividends(dividends, fx = FX, predicate = () => true) {
+  return (dividends ?? []).reduce((sum, dividend) => {
+    if (!predicate(dividend)) return sum;
+    return sum + dividend.grossAmount * fxForCurrency(dividend.currency, fx);
+  }, 0);
+}
+
+function dividendWithholdingRmbFromDividends(dividends, fx = FX, predicate = () => true) {
+  return (dividends ?? []).reduce((sum, dividend) => {
+    if (!predicate(dividend)) return sum;
+    return sum + dividend.taxWithheld * fxForCurrency(dividend.currency, fx);
+  }, 0);
+}
+
+function isUsDividend(dividend) {
+  return currencyToMarket(dividend.currency) === "US";
+}
+
 function summaryFromAnalysis(analysis, fx = FX) {
   if (!analysis) return emptySummary();
+  const usDividendTaxBase = dividendTaxBaseRmbFromDividends(analysis.dividends, fx, isUsDividend);
+  const usDividendWithholdingCredit = dividendWithholdingRmbFromDividends(analysis.dividends, fx, isUsDividend);
   return {
     capitalGain: analysis.summary.capitalGainRmb,
     capitalTaxBase: analysis.summary.capitalTaxBaseRmb,
     dividend: dividendNetRmbFromDividends(analysis.dividends, fx),
     dividendTaxBase: analysis.summary.dividend.taxableBaseRmb,
     dividendWithholdingCredit: analysis.summary.dividend.withholdingCreditRmb,
+    usDividendTaxBase,
+    usDividendWithholdingCredit,
+    usDividendNet: dividendNetRmbFromDividends(analysis.dividends.filter(isUsDividend), fx),
     taxable: analysis.summary.capitalTaxBaseRmb + analysis.summary.dividend.taxableBaseRmb,
     tax: analysis.summary.totalEstimatedTaxRmb,
     includedCount: analysis.symbols.length,
@@ -755,7 +784,7 @@ function TopBar({ activePage, onNavigate }) {
   );
 }
 
-function ContextBar({ year, setYear, methodId, setMethodId, files, excludedRecords, symbolCount }) {
+function ContextBar({ year, setYear, methodId, setMethodId, files, symbolCount }) {
   const method = methodById(methodId);
   return (
     <div className="context">
@@ -787,7 +816,7 @@ function ContextBar({ year, setYear, methodId, setMethodId, files, excludedRecor
           已导入 <b>{files.length}</b> 份券商文件
         </span>
         <span className="ctx-chip">
-          覆盖标的 <b>{symbolCount}</b> 只 · 已剔除 <b>{excludedRecords.length}</b> 只
+          覆盖标的 <b>{symbolCount}</b> 只
         </span>
       </div>
     </div>
@@ -795,10 +824,47 @@ function ContextBar({ year, setYear, methodId, setMethodId, files, excludedRecor
 }
 
 function Kpis({ summary }) {
-  const taxBeforeCredit = summary.taxable * TAX_RATE;
+  const taxBeforeCredit = (summary.capitalTaxBase + summary.dividendTaxBase) * TAX_RATE;
   return (
     <section className="kpis">
-      <div className="kpi feature">
+      <div className="kpi kpi-capital">
+        <div className="k-top">
+          <span className="k-label">财产转让所得应纳税所得额</span>
+          <span className="k-ic">
+            <TrendingUp />
+          </span>
+        </div>
+        <div className="k-val">{fmt(summary.capitalTaxBase)}</div>
+        <div className="k-foot">
+          <span className="tag up">已折算 RMB</span>实际盈亏 {cnSigned(summary.capitalGain)}，亏损按 0 计税
+        </div>
+      </div>
+
+      <div className="kpi kpi-income">
+        <div className="k-top">
+          <span className="k-label">利息、股息、红利所得应纳税所得额</span>
+          <span className="k-ic">
+            <Square />
+          </span>
+        </div>
+        <div className="k-val">{fmt(summary.dividendTaxBase)}</div>
+        <div className="k-foot">
+          其中美国分红 {fmt(summary.usDividendTaxBase)}，海外已纳税额 {fmt(summary.dividendWithholdingCredit)}
+        </div>
+      </div>
+
+      <div className="kpi kpi-us-dividend">
+        <div className="k-top">
+          <span className="k-label">美国分红应纳税所得额</span>
+          <span className="k-ic">
+            <CreditCard />
+          </span>
+        </div>
+        <div className="k-val">{fmt(summary.usDividendTaxBase)}</div>
+        <div className="k-foot">海外已纳税额 {fmt(summary.usDividendWithholdingCredit)}</div>
+      </div>
+
+      <div className="kpi kpi-tax-due">
         <div className="k-top">
           <span className="k-label">预估应补税额</span>
           <span className="k-ic">
@@ -811,47 +877,7 @@ function Kpis({ summary }) {
         </div>
         <div className="k-foot">
           <span className="tag rate">税率 20%</span>
-          抵免前 {fmt(taxBeforeCredit)} - 预提税抵免 {fmt(summary.dividendWithholdingCredit)}
-        </div>
-      </div>
-
-      <div className="kpi">
-        <div className="k-top">
-          <span className="k-label">已实现盈亏总额</span>
-          <span className="k-ic">
-            <TrendingUp />
-          </span>
-        </div>
-        <div className={`k-val ${classForNumber(summary.capitalGain)}`}>{signed(summary.capitalGain)}</div>
-        <div className="k-foot">
-          <span className="tag up">已折算 RMB</span>资本亏损不抵减分红应税基数
-        </div>
-      </div>
-
-      <div className="kpi">
-        <div className="k-top">
-          <span className="k-label">分红净入账（税后）</span>
-          <span className="k-ic">
-            <CreditCard />
-          </span>
-        </div>
-        <div className="k-val">{signed(summary.dividend)}</div>
-        <div className="k-foot">
-          税前基数 {fmt(summary.dividendTaxBase)} - 预提税 {fmt(summary.dividendWithholdingCredit)} - 费用{" "}
-          {fmt(Math.max(summary.dividendTaxBase - summary.dividendWithholdingCredit - summary.dividend, 0))}
-        </div>
-      </div>
-
-      <div className="kpi">
-        <div className="k-top">
-          <span className="k-label">应税基数合计</span>
-          <span className="k-ic">
-            <Square />
-          </span>
-        </div>
-        <div className="k-val">{fmt(summary.taxable)}</div>
-        <div className="k-foot">
-          资本利得基数 {fmt(summary.capitalTaxBase)} + 分红税前基数 {fmt(summary.dividendTaxBase)}
+          分类税额合计 {fmt(taxBeforeCredit)} - 海外已纳税额 {fmt(summary.dividendWithholdingCredit)}
         </div>
       </div>
     </section>
@@ -868,8 +894,6 @@ function Sidebar({
   analysisStatus,
   password,
   onPasswordChange,
-  excludedRecords,
-  onRestoreExcluded,
 }) {
   return (
     <aside>
@@ -932,37 +956,12 @@ function Sidebar({
       <div className="panel">
         <div className="panel-h">
           <h3>
-            <CircleSlash /> 剔除标的
-          </h3>
-          <span className="count">{excludedRecords.length}</span>
-        </div>
-        <div className="panel-b">
-          <ul className="excl">
-            {excludedRecords.map((item) => (
-              <li key={item.key ?? `${item.market}-${item.code}`}>
-                <span>
-                  <span className="code">{item.code}</span>
-                  <span className="nm">{item.name}</span>
-                </span>
-                <span className="reason">{item.tag}</span>
-                <button className="x" type="button" title="恢复计入" onClick={() => onRestoreExcluded(item.key ?? item.code)}>
-                  <X />
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-h">
-          <h3>
             <Info /> 计算口径说明
           </h3>
         </div>
         <div className="panel-b">
           <p className="note-card">
-            本工具按 <b>个人所得税「财产转让所得」20% 税率</b> 预估。盈亏与分红以 <b>成交日 / 派息日</b> 原币计入，并统一折算为人民币。
+            本工具按 <b>个人所得税「财产转让所得」和「利息、股息、红利所得」20% 税率</b> 预估。盈亏与分红以 <b>成交日 / 派息日</b> 原币计入，并统一折算为人民币。
             年度边界仅保留 <b>自然年 1/1-12/31</b>，成本法可在 FIFO 与 ACB 之间切换。结果仅供申报参考，不构成税务意见。
           </p>
         </div>
@@ -974,8 +973,6 @@ function Sidebar({
 function PnlTable({
   rows,
   methodId,
-  excludedRowKeys,
-  toggleRowExcluded,
   summary,
   manualCosts,
   costCorrections,
@@ -1051,16 +1048,14 @@ function PnlTable({
               <th className="r">盈亏（原币）</th>
               <th className="r">年末汇率</th>
               <th className="r">盈亏（RMB）</th>
-              <th className="c">计入计算</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.map((row, idx) => {
-              const excluded = excludedRowKeys.has(row.key);
               const isOpen = openRow === row.key;
               return (
                 <React.Fragment key={row.key}>
-                  <tr key={row.key} className={`stock-row ${excluded ? "excluded" : ""} ${isOpen ? "open" : ""}`} onClick={() => setOpenRow(isOpen ? null : row.key)}>
+                  <tr key={row.key} className={`stock-row ${isOpen ? "open" : ""}`} onClick={() => setOpenRow(isOpen ? null : row.key)}>
                     <td>
                       <Market market={row.market} />
                     </td>
@@ -1085,20 +1080,6 @@ function PnlTable({
                         cnSigned(row.rmb)
                       )}
                     </td>
-                    <td className="c">
-                      <span className="sw-wrap">
-                        <button
-                          type="button"
-                          className={`sw ${excluded ? "off" : ""}`}
-                          aria-label={excluded ? "恢复计入" : "剔除计算"}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            toggleRowExcluded(row.key);
-                          }}
-                        />
-                        <span className="sw-label">{excluded ? "剔除" : "计入"}</span>
-                      </span>
-                    </td>
                   </tr>
                   {isOpen ? (
                     <PnlDetailRow
@@ -1120,7 +1101,7 @@ function PnlTable({
           <tfoot>
             <tr>
               <td colSpan="6" className="r">
-                已实现盈亏合计（计入部分）
+                已实现盈亏合计
               </td>
               <td className={`r num pnl ${classForNumber(summary.capitalGain)}`}>{cnSigned(summary.capitalGain)}</td>
               <td />
@@ -1156,7 +1137,7 @@ function PnlDetailRow({
     const canSubmit = totalCost !== null && analysisStatus !== "running";
     return (
       <tr className="detail-row">
-        <td colSpan="8">
+        <td colSpan="7">
           <div className="detail-wrap">
             <div className="detail-head">
               <b>
@@ -1215,7 +1196,7 @@ function PnlDetailRow({
   const isReal = Boolean(row.transactions?.length);
   return (
     <tr className="detail-row">
-      <td colSpan="8">
+      <td colSpan="7">
         <div className="detail-wrap">
           <div className="detail-head">
             <b>
@@ -1405,20 +1386,28 @@ function PnlDetailRow({
 
 function DividendsTable({ dividends, fx }) {
   const rows = (dividends ?? []).map((dividend) => ({
-        market: currencyToMarket(dividend.currency),
-        code: dividend.symbol,
-        name: dividend.securityName,
-        perShare: "-",
-        withholding: dividend.taxWithheld ? `${fmt((dividend.taxWithheld / Math.max(dividend.grossAmount, 1)) * 100)}%` : "0%",
-        netOriginal: `${dividend.currency} ${fmt(dividend.grossAmount - dividend.taxWithheld - dividend.fee)}`,
-        rmb: (dividend.grossAmount - dividend.taxWithheld - dividend.fee) * (fx[currencyToMarket(dividend.currency)] ?? 1),
-      }));
-  const total = rows.reduce((sum, row) => sum + row.rmb, 0);
+    id: dividend.id,
+    market: currencyToMarket(dividend.currency),
+    code: dividend.symbol,
+    name: dividend.securityName,
+    withholding: dividend.taxWithheld ? `${fmt((dividend.taxWithheld / Math.max(dividend.grossAmount, 1)) * 100)}%` : "0%",
+    grossOriginal: `${dividend.currency} ${fmt(dividend.grossAmount)}`,
+    withholdingOriginal: `${dividend.currency} ${fmt(dividend.taxWithheld)}`,
+    taxableRmb: dividend.grossAmount * (fx[currencyToMarket(dividend.currency)] ?? 1),
+    withholdingRmb: dividend.taxWithheld * (fx[currencyToMarket(dividend.currency)] ?? 1),
+    source: dividend.source,
+    evidence: dividend.evidence,
+  }));
+  const totalTaxable = rows.reduce((sum, row) => sum + row.taxableRmb, 0);
+  const totalWithholding = rows.reduce((sum, row) => sum + row.withholdingRmb, 0);
+  const usTaxable = rows.filter((row) => row.market === "US").reduce((sum, row) => sum + row.taxableRmb, 0);
+  const usWithholding = rows.filter((row) => row.market === "US").reduce((sum, row) => sum + row.withholdingRmb, 0);
   return (
     <>
       <div className="toolbar">
         <span className="tcount">
-          共 <b>{rows.length}</b> 笔派息记录 · 自然年 1/1-12/31 口径 · 已扣预提税后净额计入
+          共 <b>{rows.length}</b> 笔派息记录 · 利息、股息、红利所得应纳税所得额 <b>{fmt(totalTaxable)}</b> · 其中美国分红{" "}
+          <b>{fmt(usTaxable)}</b> · 海外已纳税额 <b>{fmt(totalWithholding)}</b>
         </span>
       </div>
       <div className="tbl-wrap">
@@ -1428,33 +1417,65 @@ function DividendsTable({ dividends, fx }) {
               <th>市场</th>
               <th>代码</th>
               <th>名称</th>
-              <th className="r">每股派息</th>
+              <th className="r">税前分红（原币）</th>
               <th className="r">预提税率</th>
-              <th className="r">税后净额（原币）</th>
-              <th className="r">折算 RMB</th>
+              <th className="r">预提税（原币）</th>
+              <th className="r">应纳税所得额 RMB</th>
+              <th className="r">海外已纳税额 RMB</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
-              <tr key={`${row.market}-${row.code}`}>
-                <td>
-                  <Market market={row.market} />
-                </td>
-                <td className="code-cell">{row.code}</td>
-                <td className="stock-nm">{row.name}</td>
-                <td className="r num">{row.perShare}</td>
-                <td className="r num">{row.withholding}</td>
-                <td className="r num">{row.netOriginal}</td>
-                <td className="r num">{fmt(row.rmb)}</td>
-              </tr>
+              <React.Fragment key={row.id}>
+                <tr>
+                  <td>
+                    <Market market={row.market} />
+                  </td>
+                  <td className="code-cell">{row.code}</td>
+                  <td className="stock-nm">{row.name}</td>
+                  <td className="r num">{row.grossOriginal}</td>
+                  <td className="r num">{row.withholding}</td>
+                  <td className="r num">{row.withholdingOriginal}</td>
+                  <td className="r num">{fmt(row.taxableRmb)}</td>
+                  <td className="r num">{fmt(row.withholdingRmb)}</td>
+                </tr>
+                {row.evidence?.imageDataUrl || row.evidence?.text ? (
+                  <tr className="dividend-evidence-row">
+                    <td colSpan="8">
+                      <div className="dividend-evidence">
+                        <div className="dividend-evidence-head">
+                          <Info />
+                          <span>
+                            PDF 原文位置 · {row.source}
+                            {row.evidence?.page ? ` · 第 ${row.evidence.page} 页` : ""}
+                          </span>
+                        </div>
+                        {row.evidence?.imageDataUrl ? (
+                          <img src={row.evidence.imageDataUrl} alt={`${row.code} 分红在券商 PDF 中的位置截图`} />
+                        ) : (
+                          <code>{row.evidence?.text}</code>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ) : null}
+              </React.Fragment>
             ))}
           </tbody>
           <tfoot>
             <tr>
               <td colSpan="6" className="r">
-                分红收入合计（税后净额）
+                利息、股息、红利所得应纳税所得额合计
               </td>
-              <td className="r num">{cnSigned(total)}</td>
+              <td className="r num">{fmt(totalTaxable)}</td>
+              <td className="r num">{fmt(totalWithholding)}</td>
+            </tr>
+            <tr>
+              <td colSpan="6" className="r">
+                其中：美国分红应纳税所得额 / 海外已纳税额
+              </td>
+              <td className="r num">{fmt(usTaxable)}</td>
+              <td className="r num">{fmt(usWithholding)}</td>
             </tr>
           </tfoot>
         </table>
@@ -1526,67 +1547,67 @@ function TransferRecordsTable({ records }) {
 }
 
 function TaxSummary({ summary, fx }) {
-  const total = Math.abs(summary.capitalGain) + Math.abs(summary.dividend);
-  const gainPct = total ? (Math.abs(summary.capitalGain) / total) * 100 : 0;
+  const total = Math.abs(summary.capitalTaxBase) + Math.abs(summary.dividendTaxBase);
+  const gainPct = total ? (Math.abs(summary.capitalTaxBase) / total) * 100 : 0;
   const dividendPct = 100 - gainPct;
-  const taxBeforeCredit = summary.taxable * TAX_RATE;
+  const taxBeforeCredit = (summary.capitalTaxBase + summary.dividendTaxBase) * TAX_RATE;
 
   return (
     <div className="tax-grid">
       <div className="tax-flow">
         <div className="flow-row">
           <div className="lab">
-            <b>已实现资本盈亏</b>
-            <span>买卖价差，按年末汇率折算；亏损不抵减分红应税基数</span>
-          </div>
-          <div className={`v ${classForNumber(summary.capitalGain)}`}>{cnSigned(summary.capitalGain)}</div>
-        </div>
-        <div className="flow-row">
-          <div className="lab">
-            <b>分红收入</b>
-            <span>页面展示税后净额；计税使用税前分红基数</span>
-          </div>
-          <div className="v">{cnSigned(summary.dividend)}</div>
-        </div>
-        <div className="flow-row">
-          <div className="lab">
-            <b>资本利得应税基数</b>
-            <span>已实现资本盈亏小于 0 时按 0 计入</span>
+            <b>财产转让所得应纳税所得额</b>
+            <span>买卖价差按年末汇率折算；年度亏损时按 0 计税</span>
           </div>
           <div className="v">{fmt(summary.capitalTaxBase)}</div>
         </div>
         <div className="flow-row">
           <div className="lab">
-            <b>剔除标的影响</b>
-            <span>ETF / 债券 / 对冲等标的按用户选择排除</span>
+            <b>财产转让所得实际盈亏</b>
+            <span>用于核对买卖流水；亏损不抵减利息、股息、红利所得</span>
           </div>
-          <div className="v neg">已排除</div>
+          <div className={`v ${classForNumber(summary.capitalGain)}`}>{cnSigned(summary.capitalGain)}</div>
         </div>
         <div className="flow-row">
           <div className="lab">
-            <b>应税基数合计</b>
-            <span>资本利得应税基数 + 分红税前应税基数</span>
+            <b>利息、股息、红利所得应纳税所得额</b>
+            <span>按税前分红基数折算人民币；不与财产转让所得合并抵扣</span>
           </div>
-          <div className="v">{fmt(summary.taxable)}</div>
+          <div className="v">{fmt(summary.dividendTaxBase)}</div>
+        </div>
+        <div className="flow-row">
+          <div className="lab">
+            <b>其中：美国分红应纳税所得额</b>
+            <span>美股分红税前金额 × 年末 USD/CNY 汇率</span>
+          </div>
+          <div className="v">{fmt(summary.usDividendTaxBase)}</div>
+        </div>
+        <div className="flow-row">
+          <div className="lab">
+            <b>美国分红海外已纳税额</b>
+            <span>券商已扣的美国分红预提税，折算人民币后用于抵免</span>
+          </div>
+          <div className="v neg">-¥{fmt(summary.usDividendWithholdingCredit)}</div>
         </div>
         <div className="flow-row">
           <div className="lab">
             <b>抵免前税额</b>
-            <span>应税基数合计 × 20%</span>
+            <span>财产转让所得与利息、股息、红利所得分别按 20% 预估后合计</span>
           </div>
           <div className="v">¥{fmt(taxBeforeCredit)}</div>
         </div>
         <div className="flow-row">
           <div className="lab">
-            <b>分红预提税抵免</b>
-            <span>券商已扣缴的境外预提税，按当前口径抵免</span>
+            <b>海外已纳税额</b>
+            <span>券商已扣缴的境外预提税，按当前口径折算抵免</span>
           </div>
           <div className="v neg">-¥{fmt(summary.dividendWithholdingCredit)}</div>
         </div>
         <div className="flow-row total">
           <div className="lab">
             <b>预估应补税额</b>
-            <span>抵免前税额 - 分红预提税抵免</span>
+            <span>分类税额合计 - 海外已纳税额</span>
           </div>
           <div className="v">¥{fmt(summary.tax)}</div>
         </div>
@@ -1600,11 +1621,11 @@ function TaxSummary({ summary, fx }) {
         <div className="legend">
           <div>
             <span className="sq gain-sq" />
-            资本利得 <b>{gainPct.toFixed(1)}%</b>
+            财产转让所得 <b>{gainPct.toFixed(1)}%</b>
           </div>
           <div>
             <span className="sq accent-sq" />
-            分红收入 <b>{dividendPct.toFixed(1)}%</b>
+            利息、股息、红利所得 <b>{dividendPct.toFixed(1)}%</b>
           </div>
         </div>
         <h4 className="fx-title">折算汇率（年末中间价）</h4>
@@ -1620,52 +1641,6 @@ function TaxSummary({ summary, fx }) {
         </div>
       </div>
     </div>
-  );
-}
-
-function ExcludedTable({ records, onRestore }) {
-  return (
-    <>
-      <div className="toolbar">
-        <span className="tcount">
-          已剔除 <b>{records.length}</b> 只标的，未计入应税所得
-        </span>
-      </div>
-      <div className="tbl-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>市场</th>
-              <th>代码</th>
-              <th>名称</th>
-              <th>剔除原因</th>
-              <th className="r">原币盈亏</th>
-              <th className="r">折算 RMB</th>
-              <th className="c">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((row) => (
-              <tr className="excluded" key={row.key ?? `${row.market}-${row.code}`}>
-                <td>
-                  <Market market={row.market} />
-                </td>
-                <td className="code-cell">{row.code}</td>
-                <td className="stock-nm">{row.name}</td>
-                <td>{row.reason}</td>
-                <td className="r num">{row.original}</td>
-                <td className={`r num ${classForNumber(row.rmb)}`}>{cnSigned(row.rmb)}</td>
-                <td className="c">
-                  <button className="btn small-btn" type="button" onClick={() => onRestore(row.key ?? row.code)}>
-                    恢复计入
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
   );
 }
 
@@ -1745,10 +1720,6 @@ function Workbench({
   onClearCostCorrection,
   dividends,
   tradeActivities,
-  excludedRecords,
-  onRestoreExcluded,
-  excludedRowKeys,
-  toggleRowExcluded,
   fx,
   pendingCostFlashToken,
 }) {
@@ -1759,13 +1730,12 @@ function Workbench({
     ["div", "分红记录", dividends.length],
     ["transfer", "转仓记录", transferRecords.length],
     ["tax", "税务汇总", null],
-    ["excl", "剔除记录", excludedRecords.length],
     ["fx", "汇率参数", null],
   ];
 
   return (
     <>
-      <ContextBar year={year} setYear={setYear} methodId={methodId} setMethodId={setMethodId} files={files} excludedRecords={excludedRecords} symbolCount={rows.length} />
+      <ContextBar year={year} setYear={setYear} methodId={methodId} setMethodId={setMethodId} files={files} symbolCount={rows.length} />
       <main className="wrap">
         <Kpis summary={summary} />
         <div className="grid">
@@ -1779,8 +1749,6 @@ function Workbench({
             analysisStatus={analysisStatus}
             password={password}
             onPasswordChange={onPasswordChange}
-            excludedRecords={excludedRecords}
-            onRestoreExcluded={onRestoreExcluded}
           />
           <section className="panel content-panel" data-tour-id={tab === "pnl" ? "pnl-details-section" : undefined}>
             <div className="tabs">
@@ -1795,8 +1763,6 @@ function Workbench({
               <PnlTable
                 rows={rows}
                 methodId={methodId}
-                excludedRowKeys={excludedRowKeys}
-                toggleRowExcluded={toggleRowExcluded}
                 summary={summary}
                 manualCosts={manualCosts}
                 costCorrections={costCorrections}
@@ -1811,7 +1777,6 @@ function Workbench({
             {tab === "div" ? <DividendsTable dividends={dividends} fx={fx} /> : null}
             {tab === "transfer" ? <TransferRecordsTable records={transferRecords} /> : null}
             {tab === "tax" ? <TaxSummary summary={summary} fx={fx} /> : null}
-            {tab === "excl" ? <ExcludedTable records={excludedRecords} onRestore={onRestoreExcluded} /> : null}
             {tab === "fx" ? <FxTable fx={fx} /> : null}
           </section>
         </div>
@@ -2047,11 +2012,26 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   );
 }
 
-function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, onCopyReport, onExportCsv, onExportPdf, copied, fx }) {
+function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onExportCsv, onExportPdf, copied, fx }) {
   const fifo = methodSummaries.fifo;
   const acb = methodSummaries.acb;
   const { best, other, isTie, saving } = bestCostMethod(methodSummaries);
-  const dividendNetRmb = dividendNetRmbFromDividends(dividends, fx);
+  const dividendRows = (dividends ?? []).map((dividend) => {
+    const market = currencyToMarket(dividend.currency);
+    return {
+      ...dividend,
+      market,
+      taxableRmb: dividend.grossAmount * (fx[market] ?? 1),
+      withholdingRmb: dividend.taxWithheld * (fx[market] ?? 1),
+    };
+  });
+  const dividendTaxBaseRmb = dividendRows.reduce((sum, dividend) => sum + dividend.taxableRmb, 0);
+  const dividendWithholdingRmb = dividendRows.reduce((sum, dividend) => sum + dividend.withholdingRmb, 0);
+  const usDividendTaxBaseRmb = dividendRows.filter((dividend) => dividend.market === "US").reduce((sum, dividend) => sum + dividend.taxableRmb, 0);
+  const usDividendWithholdingRmb = dividendRows.filter((dividend) => dividend.market === "US").reduce((sum, dividend) => sum + dividend.withholdingRmb, 0);
+  const usDividendEvidenceRows = dividendRows.filter((dividend) => dividend.market === "US" && (dividend.evidence?.imageDataUrl || dividend.evidence?.text));
+  const hasForeignCreditMaterials = usDividendTaxBaseRmb > 0 || usDividendWithholdingRmb > 0 || usDividendEvidenceRows.length > 0;
+  const foreignCreditOffset = hasForeignCreditMaterials ? 1 : 0;
   const bestColClass = (id) => (!isTie && best.id === id ? "best" : "");
   const bestBadge = (id) => (!isTie && best.id === id ? <span className="badge">推荐</span> : null);
 
@@ -2073,7 +2053,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         <div className="doc-head">
           <div>
             <h1>海外证券资本利得税 · 申报底稿</h1>
-            <div className="dh-sub">个人所得税「财产转让所得」口径预估 · 供自行申报参考</div>
+            <div className="dh-sub">个人所得税「财产转让所得」和「利息、股息、红利所得」口径预估 · 供自行申报参考</div>
           </div>
           <div className="meta">
             纳税年度 <b>{year}</b>
@@ -2083,6 +2063,24 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         </div>
 
         <div className="sum">
+          <div className="cell">
+            <div className="lab">财产转让所得应纳税所得额</div>
+            <div className="val">{fmt(best.summary.capitalTaxBase)}</div>
+          </div>
+          <div className="cell">
+            <div className="lab">利息、股息、红利所得应纳税所得额</div>
+            <div className="val">
+              <span className="cur">¥</span>
+              {fmt(best.summary.dividendTaxBase)}
+            </div>
+          </div>
+          <div className="cell">
+            <div className="lab">其中：美国分红应纳税所得额</div>
+            <div className="val">
+              <span className="cur">¥</span>
+              {fmt(best.summary.usDividendTaxBase)}
+            </div>
+          </div>
           <div className="cell lead">
             <div className="lab">预估应补税额（推荐口径）</div>
             <div className="val">
@@ -2092,24 +2090,6 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
             <span className="tag">
               {best.label} · {isTie ? "税额一致" : "税负最优"}
             </span>
-          </div>
-          <div className="cell">
-            <div className="lab">应税基数合计</div>
-            <div className="val">
-              <span className="cur">¥</span>
-              {fmt(best.summary.taxable)}
-            </div>
-          </div>
-          <div className="cell">
-            <div className="lab">已实现资本盈亏</div>
-            <div className={`val ${classForNumber(best.summary.capitalGain)}`}>{cnSigned(best.summary.capitalGain)}</div>
-          </div>
-          <div className="cell">
-            <div className="lab">分红净入账（税后）</div>
-            <div className="val">
-              <span className="cur">¥</span>
-              {fmt(dividendNetRmb)}
-            </div>
           </div>
         </div>
 
@@ -2131,39 +2111,57 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
           <tbody>
             <tr>
               <td className="rowlab">
-                <b>已实现资本盈亏</b>
+                <b>财产转让所得应纳税所得额</b>
                 <br />
-                买卖价差，按年末汇率折算；亏损不抵减分红应税基数
+                已实现盈亏小于 0 时按 0 计税；亏损不抵减利息、股息、红利所得
+              </td>
+              <td className={`col ${bestColClass("fifo")}`}>{fmt(fifo.capitalTaxBase)}</td>
+              <td className={`col ${bestColClass("acb")}`}>{fmt(acb.capitalTaxBase)}</td>
+            </tr>
+            <tr>
+              <td className="rowlab">
+                <b>财产转让所得实际盈亏</b>
+                <br />
+                用于核对买卖流水，非申报应纳税所得额
               </td>
               <td className={`col ${bestColClass("fifo")}`}>{cnSigned(fifo.capitalGain)}</td>
               <td className={`col ${bestColClass("acb")}`}>{cnSigned(acb.capitalGain)}</td>
             </tr>
             <tr>
               <td className="rowlab">
-                <b>分红收入</b>
+                <b>利息、股息、红利所得应纳税所得额</b>
                 <br />
-                税后净额展示；计税使用税前分红基数
+                按税前分红基数折算人民币，独立于财产转让所得计算
               </td>
-              <td className={`col ${bestColClass("fifo")}`}>{cnSigned(dividendNetRmb)}</td>
-              <td className={`col ${bestColClass("acb")}`}>{cnSigned(dividendNetRmb)}</td>
+              <td className={`col ${bestColClass("fifo")}`}>{fmt(fifo.dividendTaxBase)}</td>
+              <td className={`col ${bestColClass("acb")}`}>{fmt(acb.dividendTaxBase)}</td>
             </tr>
             <tr>
               <td className="rowlab">
-                <b>应税基数合计</b>
+                <b>其中：美国分红应纳税所得额</b>
                 <br />
-                资本利得应税基数 + 分红税前应税基数
+                美股分红税前金额 × 年末 USD/CNY 汇率
               </td>
-              <td className={`col ${bestColClass("fifo")}`}>{fmt(fifo.taxable)}</td>
-              <td className={`col ${bestColClass("acb")}`}>{fmt(acb.taxable)}</td>
+              <td className={`col ${bestColClass("fifo")}`}>{fmt(fifo.usDividendTaxBase)}</td>
+              <td className={`col ${bestColClass("acb")}`}>{fmt(acb.usDividendTaxBase)}</td>
             </tr>
             <tr>
               <td className="rowlab">
-                <b>分红预提税抵免</b>
+                <b>海外已纳税额</b>
                 <br />
                 券商已扣缴的境外预提税
               </td>
               <td className={`col ${bestColClass("fifo")}`}>-¥{fmt(fifo.dividendWithholdingCredit)}</td>
               <td className={`col ${bestColClass("acb")}`}>-¥{fmt(acb.dividendWithholdingCredit)}</td>
+            </tr>
+            <tr>
+              <td className="rowlab">
+                <b>其中：美国分红海外已纳税额</b>
+                <br />
+                美股分红已扣税额 × 年末 USD/CNY 汇率
+              </td>
+              <td className={`col ${bestColClass("fifo")}`}>-¥{fmt(fifo.usDividendWithholdingCredit)}</td>
+              <td className={`col ${bestColClass("acb")}`}>-¥{fmt(acb.usDividendWithholdingCredit)}</td>
             </tr>
             <tr>
               <td className="rowlab">
@@ -2181,19 +2179,24 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         </table>
         <div className="save-note">
           <Check />
-          {isTie ? (
-            <>
-              两种成本法税额一致。两种口径使用完全相同的成交流水，仅成本基准不同。申报时请保持同一种成本法，不能今年用FIFO，明年用ACB，否则可能引起税务核查。
-            </>
-          ) : (
-            <>
-              采用 <b>{best.label}</b> 较 {other.label} 少缴 <b>¥{fmt(saving)}</b>。两种口径使用完全相同的成交流水，仅成本基准不同。
-            </>
-          )}
+          <div className="save-note-body">
+            <p>
+              {isTie ? (
+                <>两种成本法税额一致。两种口径使用完全相同的成交流水，仅成本基准不同。</>
+              ) : (
+                <>
+                  本次报告建议采用 <b>{best.label}</b>，较 {other.label} 少缴 <b>¥{fmt(saving)}</b>。两种口径使用完全相同的成交流水，仅成本基准不同。
+                </>
+              )}
+            </p>
+            <p className="method-warning">
+              报税口径提醒：申报时请统一使用同一种报税口径，不能今年用 FIFO、明年用 ACB，否则可能引起税务核查。
+            </p>
+          </div>
         </div>
 
         <h2 className="sh">
-          <span className="idx">2</span>资本利得分项（按市场）
+          <span className="idx">2</span>财产转让所得分项（按市场）
         </h2>
         <table className="lined">
           <thead>
@@ -2218,7 +2221,7 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
           </tbody>
           <tfoot>
             <tr>
-              <td>已实现资本盈亏合计</td>
+              <td>财产转让所得实际盈亏合计</td>
               <td className={`r num ${classForNumber(fifo.capitalGain)} ${bestColClass("fifo")}`}>{cnSigned(fifo.capitalGain)}</td>
               <td className={`r num ${classForNumber(acb.capitalGain)} ${bestColClass("acb")}`}>{cnSigned(acb.capitalGain)}</td>
               <td />
@@ -2227,71 +2230,99 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         </table>
 
         <h2 className="sh">
-          <span className="idx">3</span>分红收入分项（税后净额）
+          <span className="idx">3</span>利息、股息、红利所得分项
         </h2>
-        <table className="lined">
+        <table className="lined report-dividend-table">
+          <colgroup>
+            <col className="col-market" />
+            <col className="col-security" />
+            <col className="col-amount" />
+            <col className="col-tax" />
+            <col className="col-rmb" />
+            <col className="col-rmb" />
+          </colgroup>
           <thead>
             <tr>
               <th>市场</th>
-              <th>代码</th>
-              <th>名称</th>
-              <th className="r">税后净额</th>
-              <th className="r">折算 RMB</th>
+              <th>标的</th>
+              <th className="r">税前分红</th>
+              <th className="r">已纳税额（原币）</th>
+              <th className="r">应纳税所得额</th>
+              <th className="r">海外已纳税额</th>
             </tr>
           </thead>
           <tbody>
-            {dividends.map((dividend) => {
-              const market = currencyToMarket(dividend.currency);
-              const net = dividend.grossAmount - dividend.taxWithheld - dividend.fee;
+            {dividendRows.map((dividend) => {
               return (
                 <tr key={dividend.id}>
                   <td>
-                    <span className="mkt-tag">{market === "HK" ? "港股 HKD" : "美股 USD"}</span>
+                    <span className="mkt-tag">{dividend.market === "HK" ? "港股 HKD" : "美股 USD"}</span>
                   </td>
-                  <td className="code-cell">{dividend.symbol}</td>
-                  <td>{dividend.securityName}</td>
+                  <td className="report-security-cell">
+                    <b>{dividend.symbol}</b>
+                    <span>{dividend.securityName}</span>
+                  </td>
                   <td className="r num">
-                    {dividend.currency} {fmt(net)}
+                    {dividend.currency} {fmt(dividend.grossAmount)}
                   </td>
-                  <td className="r num">{fmt(net * (fx[market] ?? 1))}</td>
+                  <td className="r num">
+                    {dividend.currency} {fmt(dividend.taxWithheld)}
+                  </td>
+                  <td className="r num">{fmt(dividend.taxableRmb)}</td>
+                  <td className="r num">{fmt(dividend.withholdingRmb)}</td>
                 </tr>
               );
             })}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan="4">分红收入合计</td>
-              <td className="r num">{cnSigned(dividendNetRmb)}</td>
+              <td colSpan="4">利息、股息、红利所得应纳税所得额合计</td>
+              <td className="r num">{fmt(dividendTaxBaseRmb)}</td>
+              <td className="r num">{fmt(dividendWithholdingRmb)}</td>
             </tr>
           </tfoot>
         </table>
 
-        <h2 className="sh">
-          <span className="idx">4</span>已剔除标的（不计入应税所得）
-        </h2>
-        <table className="lined">
-          <thead>
-            <tr>
-              <th>代码</th>
-              <th>名称</th>
-              <th>剔除原因</th>
-              <th className="r">折算 RMB</th>
-            </tr>
-          </thead>
-          <tbody>
-            {excludedRecords.map((item) => (
-              <tr key={`${item.market}-${item.code}`}>
-                <td className="code-cell">{item.code}</td>
-                <td>{item.name}</td>
-                <td className="reason">{item.reason}</td>
-                <td className={`r num ${classForNumber(item.rmb)}`}>{cnSigned(item.rmb)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {hasForeignCreditMaterials ? (
+          <>
+            <h2 className="sh">
+              <span className="idx">4</span>境外所得抵扣材料
+            </h2>
+            <div className="foreign-credit-block">
+              <div className="foreign-credit-summary">
+                <div>
+                  <span>美国分红应纳税所得额</span>
+                  <b>¥{fmt(usDividendTaxBaseRmb)}</b>
+                </div>
+                <div>
+                  <span>美国分红海外已纳税额</span>
+                  <b>¥{fmt(usDividendWithholdingRmb)}</b>
+                </div>
+              </div>
+              <div className="foreign-credit-note">以下截图为券商 PDF 中美国分红及扣税记录的原文位置，供申报境外所得抵扣时核对。</div>
+              {usDividendEvidenceRows.length ? (
+                <div className="report-evidence-list">
+                  {usDividendEvidenceRows.map((dividend) => (
+                    <figure className="report-evidence" key={`${dividend.id}-evidence`}>
+                      <figcaption>
+                        {dividend.symbol} · {dividend.securityName} · {dividend.source}
+                        {dividend.evidence?.page ? ` · 第 ${dividend.evidence.page} 页` : ""} · 应纳税所得额 RMB {fmt(dividend.taxableRmb)} · 海外已纳税额 RMB {fmt(dividend.withholdingRmb)}
+                      </figcaption>
+                      {dividend.evidence?.imageDataUrl ? (
+                        <img src={dividend.evidence.imageDataUrl} alt={`${dividend.symbol} 美国分红 PDF 原文截图`} />
+                      ) : (
+                        <pre>{dividend.evidence?.text}</pre>
+                      )}
+                    </figure>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </>
+        ) : null}
 
         <h2 className="sh">
-          <span className="idx">5</span>数据来源文件
+          <span className="idx">{4 + foreignCreditOffset}</span>数据来源文件
         </h2>
         <table className="lined">
           <thead>
@@ -2318,8 +2349,8 @@ function ReportPage({ year, methodSummaries, excludedRecords, files, dividends, 
         </table>
 
         <div className="notes">
-          <b>计算口径说明.</b> 本底稿按个人所得税「财产转让所得」<b>20% 税率</b> 预估。年度边界为自然年 1/1-12/31。FIFO 按先进先出匹配成本，ACB
-          按持仓平均成本匹配。分红按税后净额折算为人民币。
+          <b>计算口径说明.</b> 本底稿按个人所得税「财产转让所得」和「利息、股息、红利所得」<b>20% 税率</b> 预估。年度边界为自然年 1/1-12/31。FIFO 按先进先出匹配成本，ACB
+          按持仓平均成本匹配。分红按税前金额作为利息、股息、红利所得应纳税所得额，券商已扣缴的境外预提税作为海外已纳税额列示。
           <div className="disc">免责声明：本工具结果仅供个人申报参考与自查，不构成税务、会计或法律意见。最终申报口径与税额请以主管税务机关要求及专业税务顾问意见为准。</div>
         </div>
         <PublisherCredit className="report-publisher-bottom" />
@@ -2332,7 +2363,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表或长桥 PDF 月结单。上传后系统会立即尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表或长桥 PDF 月结单。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -2347,29 +2378,13 @@ const TOUR_STEPS = [
     ],
   },
   {
-    target: "broker-files-panel",
-    title: "确认券商",
-    body: "每个文件都会带着默认判断进入列表。若识别不准，可直接用文件旁的下拉框改成正确券商。",
-  },
-  {
     target: "analyze-button",
     title: "解析并计算",
-    body: "确认材料与 PDF 密码后，点击解析会生成 FIFO 和 ACB 两套结果，并标出缺成本或需复核的记录。",
-  },
-  {
-    target: "pnl-details-section",
-    title: "根据交易明细稍作验证",
-    body: "解析完成后先看盈亏明细，展开单只股票可以核对买入、卖出、成本和已实现盈亏是否符合券商记录。",
-    emphasis: "确认传入的数据中是否有跨年买入的标的，导致成本需要手动填写。若使用长桥券商，确认填入了当年所有有交易的月份。",
-  },
-  {
-    target: "method-selector",
-    title: "切换计算口径",
-    body: "这里可以在自然年 FIFO 与 ACB 之间切换，用同一份材料比较不同成本法下的税额。",
+    body: "确认材料与 PDF 密码后，点击解析会生成 FIFO 和 ACB 两套结果。若检测到历史成本缺失，可以直接补充或订正成本后重算。",
   },
   {
     target: "report-nav",
-    title: "生成申报底稿",
+    title: "生成申报报告",
     body: "完成核对后进入申报报告页，可复制申报数字，也可以导出 PDF 留存。",
     spotlightPadding: 2,
     spotlightRadius: 10,
@@ -2448,6 +2463,24 @@ function ProjectIntroModal({ onStart, onClose }) {
           </button>
         </div>
       </section>
+    </div>
+  );
+}
+
+function WechatFeedbackFloat() {
+  return (
+    <div className="wechat-feedback" aria-label="微信反馈群">
+      <button className="wechat-feedback-trigger" type="button" aria-describedby="wechat-feedback-panel">
+        <MessageCircle />
+        <span>反馈群</span>
+      </button>
+      <div className="wechat-feedback-panel" id="wechat-feedback-panel" role="tooltip">
+        <div className="wechat-feedback-copy">
+          <b>微信反馈群</b>
+          <span>扫码加入「汤姆喵的小屋」</span>
+        </div>
+        <img src={`${ASSET_BASE}wechat-feedback-group.jpg`} alt="微信反馈群二维码" />
+      </div>
     </div>
   );
 }
@@ -2710,8 +2743,6 @@ export default function App() {
   const [year, setYear] = useState(TAX_YEAR);
   const [methodId, setMethodId] = useState("fifo");
   const [files, setFiles] = useState([]);
-  const [excludedRowKeys, setExcludedRowKeys] = useState(new Set());
-  const [excludedMeta, setExcludedMeta] = useState({});
   const [parsedInput, setParsedInput] = useState(null);
   const [analyses, setAnalyses] = useState(null);
   const [analysisStatus, setAnalysisStatus] = useState("idle");
@@ -2735,8 +2766,8 @@ export default function App() {
 
   useEffect(() => {
     if (!parsedInput) return;
-    setAnalyses(recomputeAnalyses(parsedInput, year, excludedRowKeys, costCorrectionInputsFromState(costCorrections)));
-  }, [costCorrections, excludedRowKeys, parsedInput, year]);
+    setAnalyses(recomputeAnalyses(parsedInput, year, costCorrectionInputsFromState(costCorrections)));
+  }, [costCorrections, parsedInput, year]);
 
   const currentAnalysis = analyses?.[methodId] ?? null;
   const fx = useMemo(() => fxForTaxYear(year), [year]);
@@ -2762,14 +2793,6 @@ export default function App() {
     }),
     [analyses, fx],
   );
-  const excludedRecords = useMemo(
-    () =>
-      Array.from(excludedRowKeys)
-        .map((key) => excludedMeta[key])
-        .filter(Boolean),
-    [excludedMeta, excludedRowKeys],
-  );
-
   useEffect(() => {
     if (activeIssue || activeCostRequest || modalIssues.length === 0) return;
     setActiveIssue(modalIssues[0]);
@@ -2914,42 +2937,6 @@ export default function App() {
     );
   }
 
-  function restoreExcluded(key) {
-    setExcludedRowKeys((current) => {
-      const next = new Set(current);
-      next.delete(key);
-      return next;
-    });
-  }
-
-  function toggleRowExcluded(key) {
-    const row = rows.find((item) => item.key === key);
-    setExcludedRowKeys((current) => {
-      const next = new Set(current);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-        if (row) {
-          setExcludedMeta((currentMeta) => ({
-            ...currentMeta,
-            [key]: {
-              key,
-              market: row.market,
-              code: row.code,
-              name: row.name,
-              reason: "用户手动剔除",
-              tag: "手动剔除",
-              original: row.missingCost ? `${row.currency} ${fmt(row.proceeds)}` : `${row.currency} ${cnSigned(row.pnlOriginal)}`,
-              rmb: row.rmb ?? 0,
-            },
-          }));
-        }
-      }
-      return next;
-    });
-  }
-
   function submitCostCorrection(id, value) {
     if (!id || !isValidManualCostValue(value)) return;
     setCostCorrections((current) => ({ ...current, [id]: value }));
@@ -2991,7 +2978,6 @@ export default function App() {
         password,
         manualCosts: manualCostInputs,
         costCorrections: costCorrectionInputs,
-        excludedKeys: excludedRowKeys,
       });
       setParsedInput(result.parsedInput);
       setAnalyses(result.byMethod);
@@ -3024,7 +3010,7 @@ export default function App() {
   }
 
   function exportCsv() {
-    const header = ["市场", "代码", "名称", "币种", "成本法", "盈亏原币", "折算汇率", "盈亏RMB", "是否计入"];
+    const header = ["市场", "代码", "名称", "币种", "成本法", "盈亏原币", "折算汇率", "盈亏RMB"];
     const body = rows.map((row) => [
       row.market,
       row.code,
@@ -3034,7 +3020,6 @@ export default function App() {
       row.missingCost ? "待补成本" : row.pnlOriginal.toFixed(2),
       (fx[row.market] ?? 1).toFixed(4),
       row.missingCost ? "" : row.rmb.toFixed(2),
-      excludedRowKeys.has(row.key) ? "否" : "是",
     ]);
     const csv = [header, ...body].map((line) => line.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
     const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
@@ -3051,16 +3036,16 @@ export default function App() {
     const text = [
       `海外证券资本利得税申报底稿 · 纳税年度 ${year}`,
       `计算口径：${best.label}${isTie ? "（两种成本法税额一致）" : "（推荐，税负最优）"}`,
-      `已实现资本盈亏：¥${fmt(best.summary.capitalGain)}`,
-      `资本利得应税基数：¥${fmt(best.summary.capitalTaxBase)}`,
-      `分红净入账（税后）：¥${fmt(best.summary.dividend)}`,
-      `分红税前应税基数：¥${fmt(best.summary.dividendTaxBase)}`,
-      `应税基数合计：¥${fmt(best.summary.taxable)}`,
+      `财产转让所得实际盈亏：RMB ${cnSigned(best.summary.capitalGain)}`,
+      `财产转让所得应纳税所得额：¥${fmt(best.summary.capitalTaxBase)}`,
+      `利息、股息、红利所得应纳税所得额：¥${fmt(best.summary.dividendTaxBase)}`,
+      `其中美国分红应纳税所得额：¥${fmt(best.summary.usDividendTaxBase)}`,
       "适用税率：20%",
-      `抵免前税额：¥${fmt(best.summary.taxable * TAX_RATE)}`,
-      `分红预提税抵免：¥${fmt(best.summary.dividendWithholdingCredit)}`,
+      `分类税额合计（抵免前）：¥${fmt((best.summary.capitalTaxBase + best.summary.dividendTaxBase) * TAX_RATE)}`,
+      `海外已纳税额：¥${fmt(best.summary.dividendWithholdingCredit)}`,
+      `其中美国分红海外已纳税额：¥${fmt(best.summary.usDividendWithholdingCredit)}`,
       `预估应补税额：¥${fmt(best.summary.tax)}`,
-      "说明：资本亏损不抵减分红应税基数。",
+      "说明：财产转让所得亏损不抵减利息、股息、红利所得应纳税所得额。",
       isTie ? "自然年 FIFO 与自然年 ACB 税额一致" : `对比${other.label}应缴 ¥${fmt(other.summary.tax)}，可节省 ¥${fmt(saving)}`,
       `年末汇率：USD ${fx.US.toFixed(4)} / HKD ${fx.HK.toFixed(4)}（${fx.date} ${fx.source}）`,
     ].join("\n");
@@ -3155,10 +3140,6 @@ export default function App() {
           onClearCostCorrection={clearCostCorrection}
           dividends={dividends}
           tradeActivities={tradeActivities}
-          excludedRecords={excludedRecords}
-          onRestoreExcluded={restoreExcluded}
-          excludedRowKeys={excludedRowKeys}
-          toggleRowExcluded={toggleRowExcluded}
           fx={fx}
           pendingCostFlashToken={pendingCostFlashToken}
         />
@@ -3178,7 +3159,6 @@ export default function App() {
         <ReportPage
           year={year}
           methodSummaries={methodSummaries}
-          excludedRecords={excludedRecords}
           files={files}
           dividends={dividends}
           onCopyReport={copyReport}
@@ -3200,6 +3180,7 @@ export default function App() {
       ) : null}
       {showIntro ? <ProjectIntroModal onStart={startTour} onClose={() => setShowIntro(false)} /> : null}
       {tourStep >= 0 ? <GuidedTour stepIndex={tourStep} steps={TOUR_STEPS} onNext={nextTourStep} onBack={previousTourStep} onClose={closeTour} /> : null}
+      {!isMobileDevice ? <WechatFeedbackFloat /> : null}
       {isMobileDevice ? <MobileUnsupportedOverlay /> : null}
     </>
   );

@@ -21,10 +21,20 @@ interface TextToken {
   y: number;
 }
 
+interface TextBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pageWidth: number;
+  pageHeight: number;
+}
+
 interface TextLine {
   page: number;
   text: string;
   tokens: TextToken[];
+  bounds: TextBounds;
 }
 
 interface PdfTextItemLike {
@@ -58,6 +68,12 @@ interface CashFlowRecord {
   flowType: string;
   note: string;
   amount: number;
+  evidence?: {
+    page: number;
+    text: string;
+    imageDataUrl?: string;
+    bounds: TextBounds;
+  };
 }
 
 interface PositionMoveRecord {
@@ -229,7 +245,7 @@ async function extractPdfLines(fileName: string, data: ArrayBuffer, password?: s
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(data),
+    data: new Uint8Array(data.slice(0)),
     password,
     disableFontFace: true,
     isEvalSupported: false,
@@ -239,6 +255,7 @@ async function extractPdfLines(fileName: string, data: ArrayBuffer, password?: s
 
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
     const tokens = content.items
       .flatMap((item) => {
@@ -269,10 +286,21 @@ async function extractPdfLines(fileName: string, data: ArrayBuffer, password?: s
       .sort((a, b) => b.y - a.y)
       .map((group) => {
         const sortedTokens = group.tokens.sort((a, b) => a.x - b.x);
+        const minX = Math.min(...sortedTokens.map((token) => token.x));
+        const maxX = Math.max(...sortedTokens.map((token) => token.x));
+        const lineY = sortedTokens.reduce((sum, token) => sum + token.y, 0) / sortedTokens.length;
         return {
           page: pageNumber,
           text: clean(sortedTokens.map((token) => token.text).join(" ")),
           tokens: sortedTokens,
+          bounds: {
+            x: minX,
+            y: lineY,
+            width: Math.max(1, maxX - minX),
+            height: 14,
+            pageWidth: viewport.width,
+            pageHeight: viewport.height,
+          },
         };
       });
     pages.push(lines);
@@ -351,6 +379,11 @@ function parseCashFlowLine(
     flowType,
     note,
     amount: parseNumber(amount),
+    evidence: {
+      page: line.page,
+      text: line.text,
+      bounds: line.bounds,
+    },
   };
 }
 
@@ -537,6 +570,92 @@ function extractIpoCode(note: string) {
   return match ? normalizeCode(match[1]) : null;
 }
 
+function dividendSymbolFromNote(note: string) {
+  return note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i)?.[1].toUpperCase() ?? null;
+}
+
+function isUsDividendCashFlow(cashFlow: CashFlowRecord) {
+  return canonicalText(cashFlow.flowType).includes("分红") && Boolean(dividendSymbolFromNote(cashFlow.note)) && cashFlow.amount > 0;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+async function attachDividendScreenshots(
+  fileName: string,
+  data: ArrayBuffer,
+  password: string | undefined,
+  cashFlows: CashFlowRecord[],
+) {
+  const targets = cashFlows.filter((cashFlow) => cashFlow.sourcePdf === fileName && cashFlow.evidence && isUsDividendCashFlow(cashFlow));
+  if (targets.length === 0 || typeof document === "undefined") return;
+
+  try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+    const loadingTask = pdfjs.getDocument({
+      data: new Uint8Array(data.slice(0)),
+      password,
+      disableFontFace: true,
+      isEvalSupported: false,
+    } as Parameters<typeof pdfjs.getDocument>[0]);
+    const pdfDocument = await loadingTask.promise;
+    const targetsByPage = new Map<number, CashFlowRecord[]>();
+    for (const target of targets) {
+      const pageTargets = targetsByPage.get(target.page) ?? [];
+      pageTargets.push(target);
+      targetsByPage.set(target.page, pageTargets);
+    }
+
+    for (const [pageNumber, pageTargets] of targetsByPage) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const scale = 2;
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const canvasContext = canvas.getContext("2d");
+      if (!canvasContext) continue;
+      await page.render({ canvasContext, viewport }).promise;
+
+      for (const target of pageTargets) {
+        if (!target.evidence) continue;
+        const { bounds } = target.evidence;
+        const pageWidth = bounds.pageWidth || viewport.width / scale;
+        const pageHeight = bounds.pageHeight || viewport.height / scale;
+        const rowCanvasY = (pageHeight - bounds.y) * scale;
+        const cropXPdf = 0;
+        const cropHeightPx = Math.min(180 * scale, canvas.height);
+        const cropYPx = clampNumber(rowCanvasY - 58 * scale, 0, Math.max(0, canvas.height - cropHeightPx));
+        const cropWidthPx = Math.min(canvas.width - cropXPdf * scale, (pageWidth - cropXPdf) * scale);
+        const boundedCropHeightPx = Math.min(cropHeightPx, canvas.height - cropYPx);
+        if (cropWidthPx <= 0 || boundedCropHeightPx <= 0) continue;
+
+        const cropCanvas = document.createElement("canvas");
+        cropCanvas.width = Math.ceil(cropWidthPx);
+        cropCanvas.height = Math.ceil(boundedCropHeightPx);
+        const cropContext = cropCanvas.getContext("2d");
+        if (!cropContext) continue;
+        cropContext.drawImage(
+          canvas,
+          cropXPdf * scale,
+          cropYPx,
+          cropWidthPx,
+          boundedCropHeightPx,
+          0,
+          0,
+          cropCanvas.width,
+          cropCanvas.height,
+        );
+        target.evidence.imageDataUrl = cropCanvas.toDataURL("image/jpeg", 0.9);
+      }
+    }
+  } catch {
+    // 截图只是辅助核对材料，失败时保留分红解析结果即可。
+  }
+}
+
 function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
   const dividends: DividendIncome[] = [];
   const pendingWithholding = new Map<string, number>();
@@ -544,9 +663,9 @@ function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
   for (const cashFlow of cashFlows) {
     const flowType = canonicalText(cashFlow.flowType);
     const note = canonicalText(cashFlow.note);
-    const dividendMatch = cashFlow.note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i);
-    if (flowType.includes("分红") && dividendMatch && cashFlow.amount > 0) {
-      const symbol = dividendMatch[1].toUpperCase();
+    const dividendSymbol = dividendSymbolFromNote(cashFlow.note);
+    if (flowType.includes("分红") && dividendSymbol && cashFlow.amount > 0) {
+      const symbol = dividendSymbol;
       const key = `${cashFlow.date}-${symbol}`;
       dividends.push({
         id: `${cashFlow.sourcePdf}-dividend-${symbol}-${cashFlow.date}`,
@@ -560,6 +679,13 @@ function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
         fee: 0,
         source: cashFlow.sourcePdf,
         note: cashFlow.note,
+        evidence: cashFlow.evidence
+          ? {
+              page: cashFlow.evidence.page,
+              text: cashFlow.evidence.text,
+              imageDataUrl: cashFlow.evidence.imageDataUrl,
+            }
+          : undefined,
       });
       pendingWithholding.delete(key);
       continue;
@@ -860,6 +986,7 @@ export async function parseLongbridgePdfs(
     try {
       const lines = await extractPdfLines(file.name, file.data, password);
       const fileRaw = parseLongbridgeLines(file.name, lines);
+      await attachDividendScreenshots(file.name, file.data, password, fileRaw.cashFlows);
       raw.trades.push(...fileRaw.trades);
       raw.cashFlows.push(...fileRaw.cashFlows);
       raw.moves.push(...fileRaw.moves);

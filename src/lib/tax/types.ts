@@ -70,6 +70,11 @@ export interface DividendIncome {
   fee: number;
   source: string;
   note?: string;
+  evidence?: {
+    page: number;
+    text: string;
+    imageDataUrl?: string;
+  };
 }
 
 export interface OpenPosition {
