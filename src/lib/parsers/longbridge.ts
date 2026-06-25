@@ -1027,6 +1027,10 @@ function dividendSymbolFromNote(note: string) {
   return note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i)?.[1].toUpperCase() ?? null;
 }
 
+function usSymbolFromNote(note: string) {
+  return note.match(/\b([A-Z]{1,5})\.US\b/i)?.[1].toUpperCase() ?? null;
+}
+
 function isUsDividendCashFlow(cashFlow: CashFlowRecord) {
   return canonicalText(cashFlow.flowType).includes("分红") && Boolean(dividendSymbolFromNote(cashFlow.note)) && cashFlow.amount > 0;
 }
@@ -1112,11 +1116,26 @@ async function attachDividendScreenshots(
 function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
   const dividends: DividendIncome[] = [];
   const pendingWithholding = new Map<string, number>();
+  const pendingFees = new Map<string, number>();
+  const symbolsByDate = new Map<string, Set<string>>();
+
+  for (const cashFlow of cashFlows) {
+    const symbol = usSymbolFromNote(cashFlow.note);
+    if (!symbol) continue;
+    const symbols = symbolsByDate.get(cashFlow.date) ?? new Set<string>();
+    symbols.add(symbol);
+    symbolsByDate.set(cashFlow.date, symbols);
+  }
+
+  const singleSymbolForDate = (date: string) => {
+    const symbols = symbolsByDate.get(date);
+    return symbols?.size === 1 ? Array.from(symbols)[0] : null;
+  };
 
   for (const cashFlow of cashFlows) {
     const flowType = canonicalText(cashFlow.flowType);
     const note = canonicalText(cashFlow.note);
-    const dividendSymbol = dividendSymbolFromNote(cashFlow.note);
+    const dividendSymbol = dividendSymbolFromNote(cashFlow.note) ?? singleSymbolForDate(cashFlow.date);
     if (flowType.includes("分红") && dividendSymbol && cashFlow.amount > 0) {
       const symbol = dividendSymbol;
       const key = `${cashFlow.date}-${symbol}`;
@@ -1129,7 +1148,7 @@ function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
         securityName: symbol,
         grossAmount: cashFlow.amount,
         taxWithheld: pendingWithholding.get(key) ?? 0,
-        fee: 0,
+        fee: pendingFees.get(key) ?? 0,
         source: cashFlow.sourcePdf,
         note: cashFlow.note,
         evidence: cashFlow.evidence
@@ -1141,12 +1160,26 @@ function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
           : undefined,
       });
       pendingWithholding.delete(key);
+      pendingFees.delete(key);
+      continue;
+    }
+
+    if (flowType.includes("公司行动") && note.includes("Handling Fee")) {
+      const symbol = usSymbolFromNote(cashFlow.note);
+      if (!symbol) continue;
+      const key = `${cashFlow.date}-${symbol}`;
+      const existing = dividends.find((dividend) => dividend.date === normalizeDate(cashFlow.date) && dividend.symbol === symbol);
+      if (existing) {
+        existing.fee += Math.abs(cashFlow.amount);
+      } else {
+        pendingFees.set(key, (pendingFees.get(key) ?? 0) + Math.abs(cashFlow.amount));
+      }
       continue;
     }
 
     if (note.includes("Withholding Tax/Dividend Fee") || (flowType.includes("公司行动其他费用") && note.includes("Cash Dividend"))) {
       const taxMatch = cashFlow.note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i);
-      const symbol = taxMatch?.[1].toUpperCase();
+      const symbol = taxMatch?.[1].toUpperCase() ?? singleSymbolForDate(cashFlow.date);
       if (!symbol) continue;
       const key = `${cashFlow.date}-${symbol}`;
       const existing = dividends.find((dividend) => dividend.date === normalizeDate(cashFlow.date) && dividend.symbol === symbol);

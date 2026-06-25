@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import {
   AlertCircle,
   ArrowLeft,
@@ -368,7 +369,7 @@ function coverageMonths(year, files, tradeActivities, dividends, realizedTrades,
 
   (files ?? []).forEach((file) => {
     const name = String(file.name ?? "");
-    if (file.type === "年度清单" || name.includes("年度")) {
+    if (file.type === "年度清单" || name.includes("年度") || name.includes("全年")) {
       addAllMonths();
       return;
     }
@@ -487,7 +488,7 @@ function costCorrectionInputsFromState(costCorrections) {
 }
 
 function needsBrokerPdfPassword(files) {
-  return files.some((file) => file.file && ["longbridge", "zircon"].includes(file.broker) && /\.pdf$/i.test(file.name));
+  return files.some((file) => file.file && ["longbridge", "panda", "zircon"].includes(file.broker) && /\.pdf$/i.test(file.name));
 }
 
 function detectMobileDevice() {
@@ -522,6 +523,8 @@ function useIsMobileDevice() {
 function brokerLabel(broker) {
   if (broker === "tiger") return "老虎";
   if (broker === "longbridge") return "长桥";
+  if (broker === "panda") return "熊猫";
+  if (broker === "cmbWingLung") return "招商永隆";
   if (broker === "zircon") return "卓锐";
   return "富途";
 }
@@ -529,6 +532,8 @@ function brokerLabel(broker) {
 const BROKER_OPTIONS = [
   { value: "futu", label: "富途" },
   { value: "longbridge", label: "长桥" },
+  { value: "panda", label: "熊猫" },
+  { value: "cmbWingLung", label: "招商永隆" },
   { value: "zircon", label: "卓锐" },
   { value: "tiger", label: "老虎" },
 ];
@@ -581,6 +586,8 @@ const LONGBRIDGE_TEXT_MARKERS = [
   "lbhk",
 ];
 const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "老虎", "活动报表", "Tax Form Record", "Key Tax Figures"];
+const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", "fafa.hk"];
+const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "Annual Income Report", "全年收入報告", "全年收入报告"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
 
 function brokerConfidenceLabel(confidence) {
@@ -622,6 +629,11 @@ function hasAnyMarker(text, markers) {
   return markers.some((marker) => normalized.includes(marker.toLowerCase()));
 }
 
+function hasCmbWingLungMonthlyMarkers(text) {
+  const normalized = String(text ?? "").normalize("NFKC");
+  return normalized.includes("证券账户月结单") && normalized.includes("证券账户号码");
+}
+
 function lowerFileName(fileName) {
   return String(fileName ?? "").toLowerCase();
 }
@@ -650,6 +662,20 @@ function baseBrokerGuess(fileName) {
       reason: "文件名包含长桥特征，已默认选择长桥。",
     };
   }
+  if (fileName.includes("熊猫") || fileName.includes("熊貓") || lower.includes("panda")) {
+    return {
+      broker: "panda",
+      confidence: "high",
+      reason: "文件名包含熊猫证券特征，已默认选择熊猫。",
+    };
+  }
+  if (fileName.includes("招商永隆") || lower.includes("cmb") || lower.includes("wing lung")) {
+    return {
+      broker: "cmbWingLung",
+      confidence: "high",
+      reason: "文件名包含招商永隆/CMB Wing Lung 特征，已默认选择招商永隆。",
+    };
+  }
   if (fileName.includes("卓锐") || fileName.includes("卓銳") || lower.includes("zircon")) {
     return {
       broker: "zircon",
@@ -668,7 +694,7 @@ function baseBrokerGuess(fileName) {
     return {
       broker: "longbridge",
       confidence: "medium",
-      reason: "PDF 文件会默认按长桥月结单处理；如为老虎报表，系统会继续尝试从内容自动识别。",
+      reason: "PDF 文件会默认按长桥月结单处理；如为熊猫、招商永隆、卓锐或老虎报表，请确认券商选择。",
     };
   }
   if (isExcelFile(fileName)) {
@@ -698,6 +724,30 @@ function workbookPreviewText(workbook) {
     .join(" ");
 }
 
+async function pdfPreviewText(file) {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    disableFontFace: true,
+    isEvalSupported: false,
+  });
+  const document = await loadingTask.promise;
+  const pageCount = Math.min(document.numPages, 4);
+  const chunks = [];
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const content = await page.getTextContent();
+    chunks.push(
+      content.items
+        .map((item) => (typeof item.str === "string" ? item.str : ""))
+        .filter(Boolean)
+        .join(" "),
+    );
+  }
+  return chunks.join(" ");
+}
+
 async function detectBrokerFromFile(file) {
   const fallback = baseBrokerGuess(file.name);
   try {
@@ -721,6 +771,20 @@ async function detectBrokerFromFile(file) {
           broker: "futu",
           confidence: "high",
           reason: "文件内容包含富途账户/报表特征，已默认选择富途。",
+        };
+      }
+      if (hasAnyMarker(preview, PANDA_TEXT_MARKERS)) {
+        return {
+          broker: "panda",
+          confidence: "medium",
+          reason: "文件内容包含熊猫证券特征；当前熊猫解析器支持 PDF 月结单，请解析前确认文件格式。",
+        };
+      }
+      if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
+        return {
+          broker: "cmbWingLung",
+          confidence: "medium",
+          reason: "文件内容包含招商永隆特征；当前招商永隆解析器支持 PDF 全年收入报告和证券账户月结单。",
         };
       }
       if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
@@ -747,12 +811,33 @@ async function detectBrokerFromFile(file) {
     }
 
     if (isPdfFile(file.name)) {
-      const preview = await file.slice(0, Math.min(file.size, 512 * 1024)).text();
+      const preview = await pdfPreviewText(file);
       if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
         return {
           broker: "tiger",
           confidence: "high",
           reason: "PDF 内容包含老虎/Tiger 报表特征，已默认选择老虎。",
+        };
+      }
+      if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
+        return {
+          broker: "cmbWingLung",
+          confidence: "high",
+          reason: "PDF 内容包含招商永隆特征，已默认选择招商永隆。",
+        };
+      }
+      if (hasCmbWingLungMonthlyMarkers(preview)) {
+        return {
+          broker: "cmbWingLung",
+          confidence: "high",
+          reason: "PDF 内容包含招商永隆证券账户月结单特征，已默认选择招商永隆。",
+        };
+      }
+      if (hasAnyMarker(preview, PANDA_TEXT_MARKERS)) {
+        return {
+          broker: "panda",
+          confidence: "high",
+          reason: "PDF 内容包含熊猫证券特征，已默认选择熊猫。",
         };
       }
       if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
@@ -789,8 +874,8 @@ async function detectBrokerFromFile(file) {
 
 function guessFileType(fileName) {
   const lower = fileName.toLowerCase();
+  if (fileName.includes("年度") || fileName.includes("全年") || lower.includes("annual") || lower.includes("year")) return "年度清单";
   if (fileName.includes("月结") || lower.includes("monthly") || lower.endsWith(".pdf")) return "月结单";
-  if (fileName.includes("年度") || lower.includes("annual") || lower.includes("year")) return "年度清单";
   return "待识别";
 }
 
@@ -1115,7 +1200,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>拖入或点击上传券商文件</p>
-            <span>支持富途 Excel / 长桥 PDF / 卓锐 PDF / 老虎 PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 老虎 PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {files.map((file) => (
@@ -1149,7 +1234,7 @@ function Sidebar({
           </ul>
           <label className="field-label">
             <span>PDF 月结单密码</span>
-            <input className="plain-input" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="长桥/卓锐 PDF 密码" />
+            <input className="plain-input" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="长桥/熊猫/卓锐 PDF 密码" />
           </label>
           <button className="btn primary full-btn" type="button" onClick={() => onAnalyze()} disabled={analysisStatus === "running"} data-tour-id="analyze-button">
             <Calculator /> {analysisStatus === "running" ? "解析中…" : "解析并计算"}
@@ -1282,7 +1367,7 @@ function PnlTable({
                     ) : rows.length === 0 && hasLongbridgeNoStockActivity ? (
                       <>
                         <b>本月没有股票买卖记录</b>
-                        <span>已识别到长桥月结单，但没有股票买卖记录；现金入金、出金或账户余额变化不会形成已实现资本利得。</span>
+                        <span>已识别到 PDF 月结单，但没有股票买卖记录；现金入金、出金或账户余额变化不会形成已实现资本利得。</span>
                       </>
                     ) : rows.length === 0 ? (
                       <>
@@ -2745,7 +2830,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表、长桥/卓锐 PDF 月结单或老虎 PDF 报表。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、长桥/熊猫/卓锐 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -2823,7 +2908,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <TaxCheckMark className="intro-brand-mark" />
         <h2 id="intro-title">TaxCheck 是什么</h2>
         <p>
-          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、卓锐、老虎等券商。
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、熊猫、招商永隆、卓锐、老虎等券商。
           <br />
           <br />
           <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>
@@ -2834,6 +2919,8 @@ function ProjectIntroModal({ onStart, onClose }) {
         <div className="intro-points">
           <span>富途 Excel 年度报表</span>
           <span>长桥 PDF 月结单</span>
+          <span>熊猫 PDF 月结单</span>
+          <span>招商永隆 PDF 全年收入报告/月结单</span>
           <span>卓锐 PDF 月结单</span>
           <span>老虎 PDF 税表/活动报表</span>
           <span>申报数字与 PDF 底稿</span>
@@ -3167,7 +3254,7 @@ export default function App() {
     [currentAnalysis],
   );
   const hasLongbridgeNoStockActivity = useMemo(
-    () => (currentAnalysis?.issues ?? []).some((issue) => issue.id === "longbridge-no-stock-activity"),
+    () => (currentAnalysis?.issues ?? []).some((issue) => ["longbridge-no-stock-activity", "panda-no-stock-activity"].includes(issue.id)),
     [currentAnalysis],
   );
   const hasTaxSummaryNoTradeDetail = useMemo(

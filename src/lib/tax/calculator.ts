@@ -596,7 +596,7 @@ export function analyzeTaxInput(
   const dividendGrossRmb = input.dividends.reduce(
     (sum, dividend) => sum + toRmb(dividend.grossAmount, dividend.currency, config),
     0,
-  ) + activeSummaries.reduce((sum, summary) => sum + toRmb(summary.cashDividends, summary.currency, config), 0);
+  ) + activeSummaries.reduce((sum, summary) => sum + toRmb(summary.cashDividends + (summary.interest ?? 0), summary.currency, config), 0);
   const withholdingCreditRmb = input.dividends.reduce(
     (sum, dividend) => sum + toRmb(dividend.taxWithheld, dividend.currency, config),
     0,

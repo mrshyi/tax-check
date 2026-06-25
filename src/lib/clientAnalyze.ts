@@ -4,14 +4,16 @@ import {
   mergeParsedInputs,
 } from "@/lib/tax/calculator";
 import { taxConfigForYear } from "@/lib/tax/config";
+import { parseCmbWingLungPdfs } from "@/lib/parsers/cmbWingLung";
 import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
 import { parseLongbridgePdfs, type ManualSecurityAliasInput } from "@/lib/parsers/longbridge";
+import { parsePandaPdfs } from "@/lib/parsers/panda";
 import { parseTigerPdfs } from "@/lib/parsers/tiger";
 import { parseZirconPdfs } from "@/lib/parsers/zircon";
 import { ParserValidationError } from "@/lib/parsers/common";
 import type { CostBasisCorrection, CostBasisMethod, ParsedInput, TaxAnalysis } from "@/lib/tax/types";
 
-export type BrokerId = "futu" | "longbridge" | "tiger" | "zircon";
+export type BrokerId = "futu" | "longbridge" | "panda" | "cmbWingLung" | "tiger" | "zircon";
 
 export interface UploadFileEntry {
   id: string;
@@ -123,6 +125,8 @@ export async function analyzeUploadedFiles(options: {
 
   const futuFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const longbridgeFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const pandaFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const cmbWingLungFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const tigerFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const zirconFiles: Array<{ name: string; data: ArrayBuffer }> = [];
 
@@ -140,6 +144,16 @@ export async function analyzeUploadedFiles(options: {
         throw new ParserValidationError(`${file.name} 被标记为长桥，但长桥解析器只接受 PDF 月结单。`, file.name);
       }
       longbridgeFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else if (entry.broker === "panda") {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为熊猫，但熊猫解析器只接受 PDF 月结单。`, file.name);
+      }
+      pandaFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else if (entry.broker === "cmbWingLung") {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为招商永隆，但招商永隆解析器只接受 PDF 全年收入报告或证券账户月结单。`, file.name);
+      }
+      cmbWingLungFiles.push({ name: file.name, data: await file.arrayBuffer() });
     } else if (entry.broker === "tiger") {
       if (!lower.endsWith(".pdf")) {
         throw new ParserValidationError(`${file.name} 被标记为老虎，但老虎解析器只接受 PDF 税表或活动报表。`, file.name);
@@ -165,6 +179,32 @@ export async function analyzeUploadedFiles(options: {
       targetYear: options.taxYear,
       manualCosts: options.manualCosts ?? [],
       securityAliases: options.securityAliases ?? [],
+    });
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (pandaFiles.length > 0) {
+    if (!options.password?.trim()) {
+      throw new ParserValidationError("检测到熊猫 PDF 月结单，请先填写熊猫 PDF 密码后再解析。");
+    }
+    const parsed = await parsePandaPdfs(pandaFiles, options.password, {
+      targetYear: options.taxYear,
+      manualCosts: options.manualCosts ?? [],
+      securityAliases: options.securityAliases ?? [],
+    });
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (cmbWingLungFiles.length > 0) {
+    const parsed = await parseCmbWingLungPdfs(cmbWingLungFiles, {
+      targetYear: options.taxYear,
+      manualCosts: options.manualCosts ?? [],
     });
     const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
     if (blocking) {
