@@ -22,6 +22,8 @@ export interface RealizedTrade {
   id: string;
   broker: string;
   sellDate: string;
+  time?: string;
+  sequence?: number;
   market: string;
   currency: Currency;
   symbol: string;
@@ -121,6 +123,8 @@ export interface CostBasisRequest {
   id: string;
   broker: string;
   sellDate: string;
+  time?: string;
+  sequence?: number;
   market: string;
   currency: Currency;
   symbol: string;

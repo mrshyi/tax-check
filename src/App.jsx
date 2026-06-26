@@ -212,6 +212,27 @@ function displayRowCode(code) {
   return isUnresolvedSymbol(code) ? "待补代码" : code;
 }
 
+function transactionDate(txn) {
+  return String(txn.sellDate ?? txn.date ?? "");
+}
+
+function compareTransactionRows(a, b) {
+  return (
+    transactionDate(a).localeCompare(transactionDate(b)) ||
+    String(a.time ?? "99:99:99").localeCompare(String(b.time ?? "99:99:99")) ||
+    (a.sequence ?? 0) - (b.sequence ?? 0) ||
+    String(a.id ?? "").localeCompare(String(b.id ?? ""))
+  );
+}
+
+function rowSymbolKey(row) {
+  return `${row.broker ?? ""}::${row.currency ?? ""}::${row.code ?? ""}`;
+}
+
+function uniqueSymbolCount(rows) {
+  return new Set((rows ?? []).map(rowSymbolKey)).size;
+}
+
 function securityAliasStateKey(row) {
   return `${row.broker}::${row.currency}::${row.name}`;
 }
@@ -257,11 +278,9 @@ function rowsFromAnalysis(analysis) {
       transactions: trades,
     };
   });
-  const existingKeys = new Set(rows.map((row) => row.key));
   const missingRows = (analysis.costBasisRequests ?? [])
     .map((request) => {
-      const key = `${request.broker}::${request.currency}::${request.symbol}`;
-      if (existingKeys.has(key)) return null;
+      const key = `${request.broker}::${request.currency}::${request.symbol}::missing::${request.id}`;
       const market = currencyToMarket(request.currency, request.market);
       return {
         key,
@@ -280,7 +299,8 @@ function rowsFromAnalysis(analysis) {
         transactions: [],
       };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort((a, b) => compareTransactionRows(a.missingCostRequest, b.missingCostRequest));
   const positionRows = (analysis.openPositions ?? [])
     .map((position) => {
       const baseKey = `${position.broker}::${position.currency}::${position.symbol}`;
@@ -1296,6 +1316,7 @@ function PnlTable({
     const okMarket = market === "all" || row.market === market;
     return okQuery && okMarket;
   });
+  const symbolCount = uniqueSymbolCount(rows);
   const buyActivityCount = tradeActivities.filter((activity) => activity.side === "buy" || activity.side === "acquire" || activity.side === "transfer_in").length;
   const sellActivityCount = tradeActivities.filter((activity) => activity.side === "sell").length;
 
@@ -1331,7 +1352,7 @@ function PnlTable({
         </span>
         <div className="tool-spacer" />
         <span className="tcount">
-          计入计算 <b>{summary.includedCount}</b> / {rows.length} 只
+          计入计算 <b>{summary.includedCount}</b> / {symbolCount} 只
         </span>
       </div>
       <div className="tbl-wrap">
@@ -1535,7 +1556,7 @@ function PnlDetailRow({
               </b>{" "}
               成本缺失，暂未进入应税盈亏
               <span className="dh-note">
-                已识别 {request.sellDate} 卖出 {request.quantity.toLocaleString()} 股，收入 {request.currency} {fmt(request.proceeds)}。补入这批卖出对应的总成本或每股成本后，会重新生成 FIFO / ACB 结果。
+                已识别 {request.sellDate} 卖出 {request.quantity.toLocaleString()} 股，收入 {request.currency} {fmt(request.proceeds)}。补入这笔卖出对应的总成本或每股成本后，会重新生成 FIFO / ACB 结果。
               </span>
             </div>
             <SymbolAliasForm
@@ -1644,7 +1665,7 @@ function PnlDetailRow({
       </tr>
     );
   }
-  const txns = row.transactions?.length ? row.transactions : txnsFor(idx, row);
+  const txns = row.transactions?.length ? [...row.transactions].sort(compareTransactionRows) : txnsFor(idx, row);
   const isReal = Boolean(row.transactions?.length);
   return (
     <tr className="detail-row">
@@ -2197,7 +2218,7 @@ function Workbench({
 
   return (
     <>
-      <ContextBar year={year} setYear={setYear} methodId={methodId} setMethodId={setMethodId} files={files} symbolCount={rows.length} />
+      <ContextBar year={year} setYear={setYear} methodId={methodId} setMethodId={setMethodId} files={files} symbolCount={uniqueSymbolCount(rows)} />
       <main className="wrap">
         <Kpis summary={summary} />
         <div className="grid">
@@ -3013,7 +3034,7 @@ function CostBasisModal({ request, value, analysisStatus, onSubmit, onClose }) {
         <span className="modal-kicker warning">需要补充</span>
         <h2 id="cost-basis-title">{request.symbol} 历史成本缺失</h2>
         <p>
-          系统检测到目标年度卖出 {request.quantity.toLocaleString()} 股 {request.securityName}，但上传材料无法匹配足够买入成本。请输入这批卖出对应的总成本或每股成本，确认后会立即重新计算 FIFO / ACB。
+          系统检测到目标年度卖出 {request.quantity.toLocaleString()} 股 {request.securityName}，但上传材料无法匹配足够买入成本。请输入这笔卖出对应的总成本或每股成本，确认后会立即重新计算 FIFO / ACB。
         </p>
         <div className="cost-basis-card">
           <div>

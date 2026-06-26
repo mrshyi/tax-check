@@ -137,6 +137,32 @@ function positionKey(position: Pick<OpenPosition, "broker" | "currency" | "symbo
   return key([position.broker, position.currency, position.symbol]);
 }
 
+function reportedSellKey(trade: RealizedTrade) {
+  return key([
+    trade.broker,
+    trade.sellDate,
+    trade.time ?? "",
+    trade.sequence ?? "",
+    trade.currency,
+    trade.symbol,
+    roundMoney(trade.quantity),
+    roundMoney(trade.proceeds),
+  ]);
+}
+
+function activitySellKey(activity: TradeActivity) {
+  return key([
+    activity.broker,
+    activity.date,
+    activity.time ?? "",
+    activity.sequence ?? "",
+    activity.currency,
+    activity.symbol,
+    roundMoney(activity.quantity),
+    roundMoney(activity.amount),
+  ]);
+}
+
 function maxActivityYear(input: ParsedInput) {
   const years = [...input.tradeActivities.map((activity) => activity.date), ...input.realizedTrades.map((trade) => trade.sellDate)]
     .map((date) => Number(date.slice(0, 4)))
@@ -216,6 +242,7 @@ function synthesizeActivities(input: ParsedInput) {
   const activities = [...input.tradeActivities];
   for (const [index, trade] of input.realizedTrades.entries()) {
     if (!trade.note?.includes("用户手动补录")) continue;
+    if (trade.useBrokerReportedGainLoss) continue;
     activities.push({
       id: `${trade.id}-manual-cost-activity`,
       broker: trade.broker,
@@ -286,6 +313,9 @@ function replayScenario(
   config: TaxConfig,
 ) {
   const excludedKeys = new Set(input.realizedTrades.filter((trade) => trade.excluded).map(tradeKey));
+  const reportedSellKeys = new Set(
+    input.realizedTrades.filter((trade) => trade.useBrokerReportedGainLoss && !trade.excluded).map(reportedSellKey),
+  );
   const states = new Map<string, ReplayState>();
   const trades: RealizedTrade[] = [];
   let missingCostIssueCount = 0;
@@ -310,7 +340,11 @@ function replayScenario(
       addCost(state, activity.quantity, activity.amount);
     } else if (activity.side === "sell") {
       if (state.quantity + 1e-7 < activity.quantity) {
-        if (inWindow(activity.date, window) && !excludedKeys.has(activityKey(activity))) {
+        if (
+          inWindow(activity.date, window) &&
+          !excludedKeys.has(activityKey(activity)) &&
+          !reportedSellKeys.has(activitySellKey(activity))
+        ) {
           missingCostIssueCount += 1;
         }
         state.quantity = 0;
@@ -326,6 +360,8 @@ function replayScenario(
           id: `${activity.id}-${window.mode}-${costBasisMethod}`,
           broker: activity.broker,
           sellDate: activity.date,
+          time: activity.time,
+          sequence: activity.sequence,
           market: activity.market,
           currency: activity.currency,
           symbol: activity.symbol,

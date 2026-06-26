@@ -6,6 +6,7 @@ import type {
   DividendIncome,
   OpenPosition,
   ParsedInput,
+  RealizedTrade,
   ReviewIssue,
   TradeActivity,
 } from "@/lib/tax/types";
@@ -113,6 +114,7 @@ interface MissingCostAggregate {
   quantity: number;
   proceeds: number;
   source: string;
+  sequence?: number;
 }
 
 const ZIRCON_BROKER = "卓锐";
@@ -695,18 +697,19 @@ function buildMissingCostRequests(baseActivities: TradeActivity[], targetYear?: 
     if (activity.side === "sell") {
       if (quantity + 1e-7 < activity.quantity) {
         if (targetYear === undefined || activity.date.startsWith(String(targetYear))) {
-          const requestId = `zircon-cost-${targetYear ?? "unknown"}-${activity.currency}-${activity.symbol}`;
-          const existing = missing.get(key);
-          missing.set(key, {
+          const missingKey = `${key}::${activity.id}`;
+          const requestId = `zircon-cost-${targetYear ?? "unknown"}-${activity.currency}-${activity.symbol}-${activity.date}-${activity.sequence ?? 0}`;
+          missing.set(missingKey, {
             id: requestId,
-            sellDate: existing?.sellDate ?? activity.date,
+            sellDate: activity.date,
             market: activity.market,
             currency: activity.currency,
             symbol: activity.symbol,
             securityName: activity.securityName,
-            quantity: (existing?.quantity ?? 0) + activity.quantity,
-            proceeds: (existing?.proceeds ?? 0) + activity.amount,
-            source: existing?.source ?? activity.source,
+            quantity: activity.quantity,
+            proceeds: activity.amount,
+            source: activity.source,
+            sequence: activity.sequence,
           });
         }
         states.set(key, 0);
@@ -725,7 +728,7 @@ function buildTradeActivities(
   raw: ZirconRawData,
   targetYear?: number,
   manualCosts: ManualCostInput[] = [],
-): { activities: TradeActivity[]; costBasisRequests: CostBasisRequest[]; issues: ReviewIssue[] } {
+): { activities: TradeActivity[]; realizedTrades: RealizedTrade[]; costBasisRequests: CostBasisRequest[]; issues: ReviewIssue[] } {
   const opening = buildOpeningTransfers(raw);
   const baseActivities = [
     ...opening.activities,
@@ -735,33 +738,36 @@ function buildTradeActivities(
 
   const manualCostsById = manualCostMap(manualCosts);
   const missing = buildMissingCostRequests(baseActivities, targetYear);
-  const manualTransfers: TradeActivity[] = [];
+  const manualTrades: RealizedTrade[] = [];
   const costBasisRequests: CostBasisRequest[] = [];
   const issues: ReviewIssue[] = [];
 
   for (const item of missing) {
     const manualCost = manualCostsById.get(item.id);
     if (manualCost !== undefined) {
-      manualTransfers.push({
-        id: `${item.id}-manual-transfer-in`,
+      manualTrades.push({
+        id: `${item.id}-manual`,
         broker: ZIRCON_BROKER,
-        date: item.sellDate,
-        sequence: -9_000,
+        sellDate: item.sellDate,
+        sequence: item.sequence,
         market: item.market,
         currency: item.currency,
         symbol: item.symbol,
         securityName: item.securityName,
-        side: "transfer_in",
         quantity: item.quantity,
-        amount: manualCost,
-        source: "用户手动补录成本",
-        note: `用户手动补录卖出/赎回总成本：${manualCost}`,
+        proceeds: item.proceeds,
+        costBasis: manualCost,
+        gainLoss: item.proceeds - manualCost,
+        source: item.source,
+        note: `用户手动补录这笔卖出/赎回总成本：${manualCost}`,
+        useBrokerReportedGainLoss: true,
       });
     } else {
       costBasisRequests.push({
         id: item.id,
         broker: ZIRCON_BROKER,
         sellDate: item.sellDate,
+        sequence: item.sequence,
         market: item.market,
         currency: item.currency,
         symbol: item.symbol,
@@ -769,13 +775,13 @@ function buildTradeActivities(
         quantity: item.quantity,
         proceeds: item.proceeds,
         source: item.source,
-        note: "手动补录总成本后计入资本利得",
+        note: "手动补录这笔成本后计入资本利得",
       });
       issues.push({
-        id: `zircon-${targetYear ?? "unknown"}-${item.symbol}-cost-gap`,
+        id: `${item.id}-cost-gap`,
         severity: "warning",
         title: `${item.symbol} 历史成本缺失`,
-        detail: `目标年度卖出/赎回 ${item.quantity} 份/股，但上传的卓锐月结单没有足够的月初持仓或买入记录匹配成本。请补充更早月份月结单，或在待补成本中手动填写总成本。`,
+        detail: `${item.sellDate} 卖出/赎回 ${item.quantity} 份/股，但上传的卓锐月结单没有足够的月初持仓或买入记录匹配成本。请补充更早月份月结单，或在待补成本中手动填写这笔成本。`,
         source: item.source,
       });
     }
@@ -792,7 +798,8 @@ function buildTradeActivities(
   }
 
   return {
-    activities: sortActivities([...baseActivities, ...manualTransfers]),
+    activities: sortActivities(baseActivities),
+    realizedTrades: manualTrades,
     costBasisRequests,
     issues,
   };
@@ -902,6 +909,7 @@ export async function parseZirconPdfs(
 
   const activities = buildTradeActivities(raw, options.targetYear, options.manualCosts ?? []);
   parsed.tradeActivities.push(...activities.activities);
+  parsed.realizedTrades.push(...activities.realizedTrades);
   parsed.openPositions.push(...buildOpenPositions(raw));
   parsed.dividends.push(...buildDividends(raw.cashFlows));
   parsed.costBasisRequests.push(...activities.costBasisRequests);

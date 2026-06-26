@@ -475,23 +475,22 @@ function buildRealizedTrades(
     } else {
       if (state.quantity + 1e-7 < event.quantity) {
         if (event.date.startsWith(String(targetYear))) {
-          const existing = missingCost.get(key);
-          const requestId = `futu-cost-${targetYear}-${event.currency}-${event.symbol}`;
-          missingCost.set(key, {
+          const missingKey = `${key}::${event.date}::${event.sequence}`;
+          const requestId = `futu-cost-${targetYear}-${event.currency}-${event.symbol}-${event.date}-${event.sequence}`;
+          missingCost.set(missingKey, {
             id: requestId,
             broker: "富途",
-            sellDate: existing?.sellDate ?? event.date,
+            sellDate: event.date,
             market: event.market,
             currency: event.currency,
             symbol: event.symbol,
             securityName: event.securityName,
-            quantity: (existing?.quantity ?? 0) + event.quantity,
-            proceeds: (existing?.proceeds ?? 0) + event.cash,
-            trackedQuantity: Math.max(existing?.trackedQuantity ?? 0, state.quantity),
-            source: existing?.source ?? event.source,
-            note: "手动补录总成本后计入资本利得",
+            quantity: event.quantity,
+            proceeds: event.cash,
+            trackedQuantity: state.quantity,
+            source: event.source,
+            note: "手动补录这笔成本后计入资本利得",
             sales: [
-              ...(existing?.sales ?? []),
               {
                 date: event.date,
                 time: event.time,
@@ -560,6 +559,8 @@ function buildRealizedTrades(
           id: `${item.id}-${sale.date}-${sale.sequence}-manual`,
           broker: item.broker,
           sellDate: sale.date,
+          time: sale.time,
+          sequence: sale.sequence,
           market: sale.market,
           currency: sale.currency,
           symbol: sale.symbol,
@@ -569,7 +570,8 @@ function buildRealizedTrades(
           costBasis,
           gainLoss: sale.proceeds - costBasis,
           source: sale.source,
-          note: `用户手动补录总成本：${manualCostBasis}；按卖出数量分摊`,
+          note: `用户手动补录这笔卖出总成本：${manualCostBasis}`,
+          useBrokerReportedGainLoss: true,
         });
       });
       continue;
@@ -579,6 +581,8 @@ function buildRealizedTrades(
       id: item.id,
       broker: item.broker,
       sellDate: item.sellDate,
+      time: item.sales[0]?.time,
+      sequence: item.sales[0]?.sequence,
       market: item.market,
       currency: item.currency,
       symbol: item.symbol,
@@ -589,10 +593,10 @@ function buildRealizedTrades(
       note: item.note,
     });
     issues.push({
-      id: `futu-${targetYear}-${item.symbol}-cost-gap`,
+      id: `${item.id}-cost-gap`,
       severity: "warning",
       title: `${item.symbol} 历史成本缺失`,
-      detail: `目标年度卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；相关卖出未计入资本利得，需要补充更早年度记录或手动在 **盈亏明细-待补成本** 中添加成本。`,
+      detail: `${item.sellDate} 卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；这笔卖出未计入资本利得，需要补充更早年度记录或手动在 **盈亏明细-待补成本** 中添加成本。`,
       source: item.source,
     });
   }

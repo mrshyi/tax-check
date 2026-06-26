@@ -602,23 +602,22 @@ function buildMonthlyMissingCostData(
     } else if (trade.side === "sell") {
       if (state.quantity + 1e-7 < trade.quantity) {
         if (targetYear === undefined || trade.tradeDate.startsWith(String(targetYear))) {
-          const requestId = `cmb-wing-lung-cost-${targetYear ?? "unknown"}-${trade.currency}-${trade.symbol}`;
-          const existing = missingCost.get(key);
-          missingCost.set(key, {
+          const missingKey = `${key}::${trade.tradeDate}::${trade.sourcePdf}::${trade.sequence}`;
+          const requestId = `cmb-wing-lung-cost-${targetYear ?? "unknown"}-${trade.currency}-${trade.symbol}-${trade.tradeDate}-${trade.sourcePdf}-${trade.sequence}`;
+          missingCost.set(missingKey, {
             id: requestId,
             broker: CMB_WING_LUNG_BROKER,
-            sellDate: existing?.sellDate ?? trade.tradeDate,
+            sellDate: trade.tradeDate,
             market: trade.market,
             currency: trade.currency,
             symbol: trade.symbol,
             securityName: trade.securityName,
-            quantity: (existing?.quantity ?? 0) + trade.quantity,
-            proceeds: (existing?.proceeds ?? 0) + trade.amount,
-            trackedQuantity: Math.max(existing?.trackedQuantity ?? 0, state.quantity),
-            source: existing?.source ?? trade.sourcePdf,
-            note: "手动补录总成本后计入资本利得",
+            quantity: trade.quantity,
+            proceeds: trade.amount,
+            trackedQuantity: state.quantity,
+            source: trade.sourcePdf,
+            note: "手动补录这笔成本后计入资本利得",
             sales: [
-              ...(existing?.sales ?? []),
               {
                 date: trade.tradeDate,
                 sequence: trade.sequence,
@@ -685,6 +684,7 @@ function buildMonthlyMissingCostData(
           id: `${item.id}-${sale.date}-${sale.sequence}-manual`,
           broker: item.broker,
           sellDate: sale.date,
+          sequence: sale.sequence,
           market: sale.market,
           currency: sale.currency,
           symbol: sale.symbol,
@@ -694,7 +694,8 @@ function buildMonthlyMissingCostData(
           costBasis,
           gainLoss: sale.proceeds - costBasis,
           source: sale.source,
-          note: `用户手动补录总成本：${manualCostBasis}；按卖出数量分摊`,
+          note: `用户手动补录这笔卖出总成本：${manualCostBasis}`,
+          useBrokerReportedGainLoss: true,
         });
       });
       continue;
@@ -704,6 +705,7 @@ function buildMonthlyMissingCostData(
       id: item.id,
       broker: item.broker,
       sellDate: item.sellDate,
+      sequence: item.sales[0]?.sequence,
       market: item.market,
       currency: item.currency,
       symbol: item.symbol,
@@ -714,10 +716,10 @@ function buildMonthlyMissingCostData(
       note: item.note,
     });
     issues.push({
-      id: `cmb-wing-lung-${targetYear ?? "unknown"}-${item.symbol}-cost-gap`,
+      id: `${item.id}-cost-gap`,
       severity: "warning",
       title: `${item.symbol} 历史成本缺失`,
-      detail: `目标年度卖出 ${item.quantity} 股，但上传的招商永隆月结单中最多只追踪到 ${item.trackedQuantity} 股成本。请补充更早月份月结单，或在盈亏明细的待补成本中手动填写总成本。`,
+      detail: `${item.sellDate} 卖出 ${item.quantity} 股，但上传的招商永隆月结单中最多只追踪到 ${item.trackedQuantity} 股成本。请补充更早月份月结单，或在盈亏明细的待补成本中手动填写这笔成本。`,
       source: item.source,
     });
   }
