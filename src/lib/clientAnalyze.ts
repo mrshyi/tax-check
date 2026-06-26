@@ -9,11 +9,12 @@ import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
 import { parseLongbridgePdfs, type ManualSecurityAliasInput } from "@/lib/parsers/longbridge";
 import { parsePandaPdfs } from "@/lib/parsers/panda";
 import { parseTigerPdfs } from "@/lib/parsers/tiger";
+import { parseUsmartPdfs } from "@/lib/parsers/usmart";
 import { parseZirconPdfs } from "@/lib/parsers/zircon";
 import { ParserValidationError } from "@/lib/parsers/common";
 import type { CostBasisCorrection, CostBasisMethod, ParsedInput, TaxAnalysis } from "@/lib/tax/types";
 
-export type BrokerId = "futu" | "longbridge" | "panda" | "cmbWingLung" | "tiger" | "zircon";
+export type BrokerId = "futu" | "longbridge" | "panda" | "cmbWingLung" | "tiger" | "zircon" | "usmart";
 
 export interface UploadFileEntry {
   id: string;
@@ -129,6 +130,7 @@ export async function analyzeUploadedFiles(options: {
   const cmbWingLungFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const tigerFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const zirconFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const usmartFiles: Array<{ name: string; data: ArrayBuffer }> = [];
 
   for (const entry of realFiles) {
     const file = entry.file;
@@ -159,11 +161,16 @@ export async function analyzeUploadedFiles(options: {
         throw new ParserValidationError(`${file.name} 被标记为老虎，但老虎解析器只接受 PDF 税表或活动报表。`, file.name);
       }
       tigerFiles.push({ name: file.name, data: await file.arrayBuffer() });
-    } else {
+    } else if (entry.broker === "zircon") {
       if (!lower.endsWith(".pdf")) {
         throw new ParserValidationError(`${file.name} 被标记为卓锐，但卓锐解析器只接受 PDF 月结单。`, file.name);
       }
       zirconFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为盈立，但盈立解析器只接受 PDF 月结单。`, file.name);
+      }
+      usmartFiles.push({ name: file.name, data: await file.arrayBuffer() });
     }
   }
 
@@ -228,6 +235,17 @@ export async function analyzeUploadedFiles(options: {
   }
   if (tigerFiles.length > 0) {
     const parsed = await parseTigerPdfs(tigerFiles);
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (usmartFiles.length > 0) {
+    const parsed = await parseUsmartPdfs(usmartFiles, options.password, {
+      targetYear: options.taxYear,
+      manualCosts: options.manualCosts ?? [],
+    });
     const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
     if (blocking) {
       throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
