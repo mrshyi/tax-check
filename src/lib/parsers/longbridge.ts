@@ -572,6 +572,7 @@ function hasCompleteStockTradeFields(fields: StockTradeFields) {
 
 function parseInlinePortfolioFields(line: TextLine): PortfolioFields | null {
   const amountPattern = String.raw`[+-]?\d[\d,]*(?:\.\d+)?`;
+  const optionalAmountPattern = String.raw`(?:${amountPattern}|N/A)`;
   const match = canonicalText(line.text).match(
     new RegExp(
       String.raw`^(.+?)\s+` +
@@ -580,8 +581,8 @@ function parseInlinePortfolioFields(line: TextLine): PortfolioFields | null {
         `(${amountPattern})\\s+` +
         `(${amountPattern})\\s+` +
         `(${amountPattern})\\s+` +
-        `(${amountPattern})\\s+` +
-        `(${amountPattern})(?:\\s+.*)?$`,
+        `(${optionalAmountPattern})\\s+` +
+        `(${optionalAmountPattern})(?:\\s+.*)?$`,
     ),
   );
   if (!match) return null;
@@ -597,14 +598,30 @@ function parseInlinePortfolioFields(line: TextLine): PortfolioFields | null {
   };
 }
 
+function isNotAvailableCell(value: string) {
+  return /^(N\/A|NA|-{1,2})$/i.test(canonicalText(value).trim());
+}
+
+function isPortfolioCostOrPnlCell(value: string) {
+  return isNumericCell(value) || isNotAvailableCell(value);
+}
+
 function hasCompletePortfolioFields(fields: PortfolioFields) {
-  return (
+  const hasCoreFields =
     Boolean(fields.item) &&
     isNumericCell(fields.beginQty) &&
     isNumericCell(fields.changeQty) &&
     isNumericCell(fields.endQty) &&
     isNumericCell(fields.price) &&
-    isNumericCell(fields.marketValue) &&
+    isNumericCell(fields.marketValue);
+
+  if (!hasCoreFields) return false;
+
+  if (parseNumber(fields.endQty) <= 0) {
+    return isPortfolioCostOrPnlCell(fields.avgCost) && isPortfolioCostOrPnlCell(fields.unrealizedGainLoss);
+  }
+
+  return (
     isNumericCell(fields.avgCost) &&
     isNumericCell(fields.unrealizedGainLoss)
   );
@@ -1689,33 +1706,43 @@ function buildRealizedTrades(
   return { trades: realizedTrades, issues, activities: buildTradeActivities(events), costBasisRequests };
 }
 
+function portfolioStatementMonth(position: PortfolioRecord) {
+  const statementMonth = position.sourcePdf.match(/(20\d{2})[-_年.]?(0[1-9]|1[0-2])/);
+  return position.statementMonth ?? (statementMonth ? `${statementMonth[1]}-${statementMonth[2]}` : "");
+}
+
 function buildOpenPositions(raw: LongbridgeRawData): OpenPosition[] {
   const latestByCode = new Map<string, PortfolioRecord>();
   for (const position of raw.positions) {
     const market = canonicalText(position.market);
     if (market !== "香港市场" && market !== "美国市场") continue;
-    if (position.endQty <= 0) continue;
-    latestByCode.set(`${position.currency}::${position.code}`, position);
+    const key = `${position.currency}::${position.code}`;
+    const existing = latestByCode.get(key);
+    if (!existing || portfolioStatementMonth(position) >= portfolioStatementMonth(existing)) {
+      latestByCode.set(key, position);
+    }
   }
 
-  return Array.from(latestByCode.values()).map((position) => {
-    const statementMonth = position.sourcePdf.match(/(20\d{2})[-_年.]?(0[1-9]|1[0-2])/);
-    const asOfMonth = position.statementMonth ?? (statementMonth ? `${statementMonth[1]}-${statementMonth[2]}` : "");
-    return {
-      id: `longbridge-open-${position.currency}-${position.code}`,
-      broker: "长桥",
-      asOf: asOfMonth ? `${asOfMonth}-末` : "",
-      market: canonicalText(position.market),
-      currency: position.currency,
-      symbol: displayCode(position.code),
-      securityName: position.name,
-      quantity: position.endQty,
-      marketValue: position.marketValue,
-      costBasis: position.endQty * position.avgCost,
-      unrealizedGainLoss: position.unrealizedGainLoss,
-      source: position.sourcePdf,
-    };
-  });
+  return Array.from(latestByCode.values())
+    .filter((position) => position.endQty > 0)
+    .map((position) => {
+      const statementMonth = position.sourcePdf.match(/(20\d{2})[-_年.]?(0[1-9]|1[0-2])/);
+      const asOfMonth = position.statementMonth ?? (statementMonth ? `${statementMonth[1]}-${statementMonth[2]}` : "");
+      return {
+        id: `longbridge-open-${position.currency}-${position.code}`,
+        broker: "长桥",
+        asOf: asOfMonth ? `${asOfMonth}-末` : "",
+        market: canonicalText(position.market),
+        currency: position.currency,
+        symbol: displayCode(position.code),
+        securityName: position.name,
+        quantity: position.endQty,
+        marketValue: position.marketValue,
+        costBasis: position.endQty * position.avgCost,
+        unrealizedGainLoss: position.unrealizedGainLoss,
+        source: position.sourcePdf,
+      };
+    });
 }
 
 export async function parseLongbridgePdfs(

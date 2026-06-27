@@ -203,6 +203,18 @@ function includesDividendMarker(note: string) {
   return upper.includes("F/D") || upper.includes("S/D") || upper.includes("DIVIDEND");
 }
 
+function includesDividendTaxMarker(note: string) {
+  const upper = note.toUpperCase();
+  return (
+    upper.includes("WITHHOLDING TAX") ||
+    upper.includes("W/TAX") ||
+    upper.includes("DIVIDEND TAX") ||
+    note.includes("股息税") ||
+    note.includes("红利税") ||
+    note.includes("预扣税")
+  );
+}
+
 function parseSecurityFromNote(note: string) {
   const sehk = note.match(/<(?:SEHK|HKEX|HKFX)\s+0?(\d{3,5})\s+([^>]+)>/i);
   if (sehk) {
@@ -210,6 +222,14 @@ function parseSecurityFromNote(note: string) {
     return {
       symbol,
       securityName: KNOWN_SECURITY_NAMES[symbol] ?? sehk[2].replace(/\s+\d+\s*(shares|股|shs).*$/i, "").trim(),
+    };
+  }
+  const usSecurity = note.match(/^([A-Z][A-Z0-9.-]{0,9})\s+[\d,.]+\s*(?:shares?|shs|股)\b/i);
+  if (usSecurity) {
+    const symbol = normalizeSymbol(usSecurity[1]);
+    return {
+      symbol,
+      securityName: securityName(symbol),
     };
   }
   const hash = note.match(/#0?(\d{3,5})/i);
@@ -296,6 +316,7 @@ function parseDividends(contexts: WorkbookContext[]): DividendIncome[] {
     const headers = rows[0] ?? [];
     const dividendMap = new Map<string, DividendIncome>();
     const pendingFees = new Map<string, number>();
+    const pendingTaxes = new Map<string, number>();
 
     rows.slice(1).forEach((values, index) => {
       const row = rowObject(headers, values);
@@ -316,12 +337,26 @@ function parseDividends(contexts: WorkbookContext[]): DividendIncome[] {
           symbol: security.symbol,
           securityName: security.securityName,
           grossAmount: amount,
-          taxWithheld: 0,
+          taxWithheld: pendingTaxes.get(feeKey) ?? 0,
           fee: pendingFees.get(feeKey) ?? 0,
           source: sourceId(context.fileName, index + 2),
           note,
         });
         pendingFees.delete(feeKey);
+        pendingTaxes.delete(feeKey);
+      }
+
+      if (includesDividendTaxMarker(note) && direction === "Out") {
+        const security = parseSecurityFromNote(note);
+        const taxKey = `${date}-${security.symbol}`;
+        const nearby = Array.from(dividendMap.values()).reverse().find((dividend) => {
+          return dividend.date === date && dividend.symbol === security.symbol;
+        });
+        if (nearby) {
+          nearby.taxWithheld += Math.abs(amount);
+        } else {
+          pendingTaxes.set(taxKey, (pendingTaxes.get(taxKey) ?? 0) + Math.abs(amount));
+        }
       }
 
       if ((note.toUpperCase().includes("HANDLING") || note.includes("手续费")) && direction === "Out") {
