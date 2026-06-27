@@ -5,6 +5,7 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  ArrowUpDown,
   Calculator,
   Check,
   CheckCircle2,
@@ -368,6 +369,32 @@ function activitySideFilterValue(activity) {
   if (isBuyLikeActivity(activity)) return "buy";
   if (["sell", "short_open", "transfer_out"].includes(activity.side)) return "sell";
   return "other";
+}
+
+function compareFlowBase(a, b) {
+  return (
+    a.market.localeCompare(b.market) ||
+    a.code.localeCompare(b.code) ||
+    a.date.localeCompare(b.date) ||
+    String(a.time ?? "").localeCompare(String(b.time ?? "")) ||
+    (a.sequence ?? 0) - (b.sequence ?? 0) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function compareFlowsByCode(a, b) {
+  return compareFlowBase(a, b);
+}
+
+function compareFlowsByDate(a, b) {
+  return (
+    a.date.localeCompare(b.date) ||
+    String(a.time ?? "").localeCompare(String(b.time ?? "")) ||
+    (a.sequence ?? 0) - (b.sequence ?? 0) ||
+    a.market.localeCompare(b.market) ||
+    a.code.localeCompare(b.code) ||
+    a.id.localeCompare(b.id)
+  );
 }
 
 function transferSideLabel(activity) {
@@ -2352,6 +2379,7 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   const [query, setQuery] = useState("");
   const [market, setMarket] = useState("all");
   const [side, setSide] = useState("all");
+  const [flowSort, setFlowSort] = useState("code");
   const [showPositions, setShowPositions] = useState(false);
   const months = useMemo(
     () => coverageMonths(year, files, tradeActivities, dividends, realizedTrades, openPositions),
@@ -2362,6 +2390,8 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
       return tradeActivities.map((activity, index) => ({
         id: `${activity.id ?? "activity"}::${index}`,
         date: activity.date,
+        time: activity.time,
+        sequence: activity.sequence,
         market: currencyToMarket(activity.currency, activity.market),
         code: activity.symbol,
         name: activity.securityName,
@@ -2410,12 +2440,15 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   }, [fx, openPositions]);
   const hasPositionPnl = positions.some((item) => item.rmb !== null);
   const posTotal = positions.reduce((sum, item) => sum + (item.rmb ?? 0), 0);
-  const filteredFlows = flows.filter((flow) => {
-    const okQuery = !query || flow.query.includes(query.trim().toLowerCase());
-    const okMarket = market === "all" || flow.market === market;
-    const okSide = side === "all" || flow.sideFilter === side;
-    return okQuery && okMarket && okSide;
-  });
+  const filteredFlows = useMemo(() => {
+    const matched = flows.filter((flow) => {
+      const okQuery = !query || flow.query.includes(query.trim().toLowerCase());
+      const okMarket = market === "all" || flow.market === market;
+      const okSide = side === "all" || flow.sideFilter === side;
+      return okQuery && okMarket && okSide;
+    });
+    return matched.sort(flowSort === "date" ? compareFlowsByDate : compareFlowsByCode);
+  }, [flowSort, flows, market, query, side]);
 
   return (
     <main className="wrap">
@@ -2528,6 +2561,14 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
             ]}
             onChange={setSide}
           />
+          <Segmented
+            value={flowSort}
+            options={[
+              { value: "date", label: "按日期" },
+              { value: "code", label: "按代码" },
+            ]}
+            onChange={setFlowSort}
+          />
           <div className="tool-spacer" />
           <span className="tcount">
             显示 <b>{filteredFlows.length}</b> 笔
@@ -2537,9 +2578,31 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
           <table>
             <thead>
               <tr>
-                <th>成交日期</th>
+                <th>
+                  <button
+                    type="button"
+                    className={`th-sort ${flowSort === "date" ? "on" : ""}`}
+                    onClick={() => setFlowSort("date")}
+                    aria-pressed={flowSort === "date"}
+                    title="按成交日期排序"
+                  >
+                    <span>成交日期</span>
+                    <ArrowUpDown />
+                  </button>
+                </th>
                 <th>市场</th>
-                <th>代码</th>
+                <th>
+                  <button
+                    type="button"
+                    className={`th-sort ${flowSort === "code" ? "on" : ""}`}
+                    onClick={() => setFlowSort("code")}
+                    aria-pressed={flowSort === "code"}
+                    title="按股票代码排序"
+                  >
+                    <span>代码</span>
+                    <ArrowUpDown />
+                  </button>
+                </th>
                 <th>名称</th>
                 <th className="c">方向</th>
                 <th className="c">币种</th>

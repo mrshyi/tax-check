@@ -1224,6 +1224,38 @@ td.c {
   text-align: center;
 }
 
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.th-sort svg {
+  width: 13px;
+  height: 13px;
+  color: var(--faint);
+  transition: 0.12s;
+}
+
+.th-sort:hover,
+.th-sort.on {
+  color: var(--fg);
+}
+
+.th-sort:hover svg,
+.th-sort.on svg {
+  color: var(--accent-ink);
+}
+
 tbody td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
