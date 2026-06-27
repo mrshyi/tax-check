@@ -793,6 +793,14 @@ function isCurrencySummaryItem(value: string) {
   return /^(HKD|USD|CNY|SGD)$/i.test(clean(value));
 }
 
+function inferCashFlowCurrency(fields: CashFlowFields, fallback: Currency) {
+  const text = canonicalText(`${fields.flowType} ${fields.note}`).toUpperCase();
+  if (text.includes("USD") || text.includes("美元")) return "USD";
+  if (text.includes("CNY") || text.includes("RMB") || text.includes("人民币")) return "CNY";
+  if (text.includes("HKD") || text.includes("港币")) return "HKD";
+  return fallback;
+}
+
 function parseCashFlowLine(
   sourcePdf: string,
   line: TextLine,
@@ -815,7 +823,7 @@ function parseCashFlowLine(
   return {
     sourcePdf,
     page: line.page,
-    currency,
+    currency: inferCashFlowCurrency(fields, currency),
     date: fields.date,
     flowType: fields.flowType,
     note: fields.note,
@@ -826,6 +834,22 @@ function parseCashFlowLine(
       bounds: line.bounds,
     },
   };
+}
+
+function isStandaloneCashFlowCandidate(cashFlow: CashFlowRecord) {
+  const flowType = canonicalText(cashFlow.flowType);
+  const note = canonicalText(cashFlow.note);
+  const text = `${flowType} ${note}`.toLowerCase();
+  return (
+    flowType.includes("现金分红") ||
+    flowType.includes("公司行动") ||
+    flowType.includes("转入余额通") ||
+    flowType.includes("余额通转出") ||
+    flowType.includes("新股") ||
+    text.includes("cash dividend") ||
+    text.includes("withholding tax/dividend fee") ||
+    ENGLISH_CASH_FLOW_TYPES.some((type) => text.startsWith(type.toLowerCase()))
+  );
 }
 
 function parsePositionMoveLine(
@@ -1055,6 +1079,14 @@ function parseLongbridgeLines(
       continue;
     }
 
+    if (activeTable !== "stock_trade" && activeTable !== "cash_flow" && activeTable !== "position_move") {
+      const cashFlow = parseCashFlowLine(sourcePdf, line, cashCurrency);
+      if (cashFlow && isStandaloneCashFlowCandidate(cashFlow)) {
+        raw.cashFlows.push(cashFlow);
+        continue;
+      }
+    }
+
     if (activeTable === "stock_trade" || /\bOS\d+/.test(text)) {
       const trade = parseStockTradeLine(sourcePdf, line, tradeMarket, tradeCurrency, sequence, documentSecurityAliases);
       if (trade) {
@@ -1130,12 +1162,15 @@ function extractIpoCode(note: string) {
   return match ? normalizeCode(match[1]) : null;
 }
 
+const US_SECURITY_NOTE_RE = /\b([A-Z]{1,5})(?:\.US|\([A-Z]{2}[A-Z0-9]{8,12}\))/i;
+const US_DIVIDEND_NOTE_RE = /\b([A-Z]{1,5})(?:\.US|\([A-Z]{2}[A-Z0-9]{8,12}\))\s+Cash Dividend/i;
+
 function dividendSymbolFromNote(note: string) {
-  return note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i)?.[1].toUpperCase() ?? null;
+  return canonicalText(note).match(US_DIVIDEND_NOTE_RE)?.[1].toUpperCase() ?? null;
 }
 
 function usSymbolFromNote(note: string) {
-  return note.match(/\b([A-Z]{1,5})\.US\b/i)?.[1].toUpperCase() ?? null;
+  return canonicalText(note).match(US_SECURITY_NOTE_RE)?.[1].toUpperCase() ?? null;
 }
 
 function isUsDividendCashFlow(cashFlow: CashFlowRecord) {
@@ -1298,8 +1333,7 @@ function buildDividends(cashFlows: CashFlowRecord[]): DividendIncome[] {
       lowerFlowType.includes("withholding tax/dividend fee") ||
       (flowType.includes("公司行动其他费用") && note.includes("Cash Dividend"))
     ) {
-      const taxMatch = cashFlow.note.match(/([A-Z]{1,5})\.US\s+Cash Dividend/i);
-      const symbol = taxMatch?.[1].toUpperCase() ?? singleSymbolForDate(cashFlow.date);
+      const symbol = dividendSymbolFromNote(cashFlow.note) ?? singleSymbolForDate(cashFlow.date);
       if (!symbol) continue;
       const key = `${cashFlow.date}-${symbol}`;
       const existing = dividends.find((dividend) => dividend.date === normalizeDate(cashFlow.date) && dividend.symbol === symbol);

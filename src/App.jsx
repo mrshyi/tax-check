@@ -193,15 +193,23 @@ function summaryFromAnalysis(analysis, fx = FX) {
 }
 
 function marketCodeFromText(market) {
-  const text = String(market ?? "").toUpperCase();
-  if (text.includes("美国") || text.includes("US")) return "US";
-  return "HK";
+  const text = String(market ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toUpperCase();
+  if (!text) return "";
+  if (/(美国|美股|UNITED STATES|NASDAQ|NYSE|AMEX|ARCA|BATS|\bUS\b|\bUSA\b)/.test(text)) return "US";
+  if (/(香港|港股|HONG KONG|SEHK|HKEX|\bHK\b|\bHKG\b)/.test(text)) return "HK";
+  return "";
 }
 
 function currencyToMarket(currency, market) {
-  if (currency === "USD") return "US";
-  if (currency === "HKD") return "HK";
-  return marketCodeFromText(market);
+  const marketCode = marketCodeFromText(market);
+  if (marketCode) return marketCode;
+  const currencyCode = String(currency ?? "").toUpperCase();
+  if (currencyCode === "USD") return "US";
+  if (currencyCode === "HKD") return "HK";
+  return "HK";
 }
 
 function isUnresolvedSymbol(symbol) {
@@ -354,6 +362,12 @@ function activitySideLabel(activity) {
 
 function isBuyLikeActivity(activity) {
   return ["buy", "acquire", "transfer_in", "short_close"].includes(activity.side);
+}
+
+function activitySideFilterValue(activity) {
+  if (isBuyLikeActivity(activity)) return "buy";
+  if (["sell", "short_open", "transfer_out"].includes(activity.side)) return "sell";
+  return "other";
 }
 
 function transferSideLabel(activity) {
@@ -554,6 +568,7 @@ function useIsMobileDevice() {
 }
 
 function brokerLabel(broker) {
+  if (broker === "ibkr") return "IBKR";
   if (broker === "tiger") return "老虎";
   if (broker === "longbridge") return "长桥";
   if (broker === "panda") return "熊猫";
@@ -571,6 +586,7 @@ const BROKER_OPTIONS = [
   { value: "zircon", label: "卓锐" },
   { value: "usmart", label: "盈立" },
   { value: "tiger", label: "老虎" },
+  { value: "ibkr", label: "IBKR" },
 ];
 const TAX_YEAR_OPTIONS = [2021, 2022, 2023, 2024, 2025];
 const PUBLISHER_NAME = "汤姆喵的奇妙旅行";
@@ -625,6 +641,7 @@ const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", 
 const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "Annual Income Report", "全年收入報告", "全年收入报告"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
 const USMART_TEXT_MARKERS = ["盈立", "盈立證券", "盈立证券", "uSmart Securities", "usmarthk.com", "usmartsecurities.com"];
+const IBKR_TEXT_MARKERS = ["Interactive Brokers", "Interactive Brokers LLC", "IBKR", "盈透", "活动账单", "Activity Statement"];
 
 function brokerConfidenceLabel(confidence) {
   if (confidence === "manual") return "手动选择";
@@ -733,11 +750,18 @@ function baseBrokerGuess(fileName) {
       reason: "文件名包含老虎/Tiger 特征，已默认选择老虎。",
     };
   }
+  if (fileName.includes("盈透") || lower.includes("ibkr") || lower.includes("ibkb") || lower.includes("interactive brokers")) {
+    return {
+      broker: "ibkr",
+      confidence: "high",
+      reason: "文件名包含 IBKR/盈透特征，已默认选择 IBKR。",
+    };
+  }
   if (isPdfFile(fileName)) {
     return {
       broker: "longbridge",
       confidence: "medium",
-      reason: "PDF 文件会默认按长桥月结单处理；如为熊猫、招商永隆、卓锐、盈立或老虎报表，请确认券商选择。",
+      reason: "PDF 文件会默认按长桥月结单处理；如为熊猫、招商永隆、卓锐、盈立、老虎或 IBKR 报表，请确认券商选择。",
     };
   }
   if (isExcelFile(fileName)) {
@@ -858,10 +882,24 @@ async function detectBrokerFromFile(file) {
           reason: "文件内容包含盈立/uSmart 特征；当前盈立解析器支持 PDF 月结单，请解析前确认文件格式。",
         };
       }
+      if (hasAnyMarker(preview, IBKR_TEXT_MARKERS)) {
+        return {
+          broker: "ibkr",
+          confidence: "medium",
+          reason: "文件内容包含 IBKR/盈透特征；当前 IBKR 解析器支持 PDF Activity Statement / 活动账单。",
+        };
+      }
     }
 
     if (isPdfFile(file.name)) {
       const preview = await pdfPreviewText(file);
+      if (hasAnyMarker(preview, IBKR_TEXT_MARKERS)) {
+        return {
+          broker: "ibkr",
+          confidence: "high",
+          reason: "PDF 内容包含 IBKR/盈透活动账单特征，已默认选择 IBKR。",
+        };
+      }
       if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
         return {
           broker: "tiger",
@@ -1257,7 +1295,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>拖入或点击上传券商文件</p>
-            <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {files.map((file) => (
@@ -2321,13 +2359,15 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   );
   const flows = useMemo(() => {
     if (tradeActivities?.length) {
-      return tradeActivities.map((activity) => ({
+      return tradeActivities.map((activity, index) => ({
+        id: `${activity.id ?? "activity"}::${index}`,
         date: activity.date,
         market: currencyToMarket(activity.currency, activity.market),
         code: activity.symbol,
         name: activity.securityName,
         currency: activity.currency,
         side: activitySideLabel(activity),
+        sideFilter: activitySideFilterValue(activity),
         rawSide: activity.side,
         qty: activity.quantity,
         price: activity.unitPrice ?? (activity.quantity ? Math.abs(activity.amount / activity.quantity) : 0),
@@ -2373,7 +2413,7 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
   const filteredFlows = flows.filter((flow) => {
     const okQuery = !query || flow.query.includes(query.trim().toLowerCase());
     const okMarket = market === "all" || flow.market === market;
-    const okSide = side === "all" || flow.side === side;
+    const okSide = side === "all" || flow.sideFilter === side;
     return okQuery && okMarket && okSide;
   });
 
@@ -2483,8 +2523,8 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
             value={side}
             options={[
               { value: "all", label: "买卖" },
-              { value: "买入", label: "买入" },
-              { value: "卖出", label: "卖出" },
+              { value: "buy", label: "买入" },
+              { value: "sell", label: "卖出" },
             ]}
             onChange={setSide}
           />
@@ -2511,7 +2551,7 @@ function HoldingsPage({ year, openPositions, tradeActivities, realizedTrades, di
             </thead>
             <tbody>
               {filteredFlows.map((flow) => (
-                <tr key={`${flow.date}-${flow.code}-${flow.side}-${flow.qty}`}>
+                <tr key={flow.id}>
                   <td className="num muted">{flow.date}</td>
                   <td>
                     <Market market={flow.market} />
@@ -2889,7 +2929,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表、长桥/熊猫/卓锐/盈立 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、长桥/熊猫/卓锐/盈立 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -2967,7 +3007,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <TaxCheckMark className="intro-brand-mark" />
         <h2 id="intro-title">TaxCheck 是什么</h2>
         <p>
-          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、熊猫、招商永隆、卓锐、盈立、老虎等券商。
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、熊猫、招商永隆、卓锐、盈立、老虎、IBKR等券商。
           <br />
           <br />
           <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>
@@ -2982,6 +3022,7 @@ function ProjectIntroModal({ onStart, onClose }) {
           <span>招商永隆 PDF 全年收入报告/月结单</span>
           <span>卓锐 PDF 月结单</span>
           <span>老虎 PDF 税表/活动报表</span>
+          <span>IBKR PDF 活动账单</span>
           <span>申报数字与 PDF 底稿</span>
         </div>
         <div className="intro-actions">
@@ -3315,7 +3356,7 @@ export default function App() {
   const hasLongbridgeNoStockActivity = useMemo(
     () =>
       (currentAnalysis?.issues ?? []).some((issue) =>
-        ["longbridge-no-stock-activity", "panda-no-stock-activity", "usmart-no-stock-activity"].includes(issue.id),
+        ["longbridge-no-stock-activity", "panda-no-stock-activity", "usmart-no-stock-activity", "ibkr-no-stock-activity"].includes(issue.id),
       ),
     [currentAnalysis],
   );
