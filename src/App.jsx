@@ -1175,6 +1175,7 @@ function useIsMobileDevice() {
 function brokerLabel(broker) {
   if (broker === "ibkr") return "IBKR";
   if (broker === "tiger") return "老虎";
+  if (broker === "huasheng") return "华盛";
   if (broker === "longbridge") return "长桥";
   if (broker === "panda") return "熊猫";
   if (broker === "cmbWingLung") return "招商永隆";
@@ -1185,6 +1186,7 @@ function brokerLabel(broker) {
 
 const BROKER_OPTIONS = [
   { value: "futu", label: "富途" },
+  { value: "huasheng", label: "华盛" },
   { value: "longbridge", label: "长桥" },
   { value: "panda", label: "熊猫" },
   { value: "cmbWingLung", label: "招商永隆" },
@@ -1229,6 +1231,9 @@ const TAX_FORM_GUIDES = {
 
 const FUTU_SHEET_MARKERS = ["账户信息", "证券-持仓总览", "证券-交易流水", "证券-资产进出", "证券-资金进出"];
 const FUTU_TEXT_MARKERS = ["富途", "futu", "moomoo", "牛牛号", "账户号码"];
+const HUASHENG_TRADE_HEADERS = ["参考编号", "交易日期", "市场", "币种", "股票代码", "股票名称", "买/卖", "价格", "数量", "交易金额", "交易费用合计"];
+const HUASHENG_COMPANY_ACTION_HEADERS = ["登记日", "派发日", "市场", "股票代码", "股票名称", "登记数量", "派红利币种", "派发红利金额", "费用"];
+const HUASHENG_TEXT_MARKERS = ["华盛", "華盛", "华盛通", "華盛通", "valuable capital"];
 const LONGBRIDGE_TEXT_MARKERS = [
   "长桥",
   "長橋",
@@ -1340,6 +1345,26 @@ function hasLongbridgeStockLedgerSheet(workbook) {
   });
 }
 
+function workbookSheetHasHeaders(workbook, sheetName, requiredHeaders) {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return false;
+  const rows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+    blankrows: false,
+  });
+  const headers = new Set((rows[0] ?? []).map((header) => String(header ?? "").normalize("NFKC").trim()));
+  return requiredHeaders.every((header) => headers.has(header));
+}
+
+function hasHuashengTaxWorkbookSheet(workbook) {
+  return (
+    workbookSheetHasHeaders(workbook, "证券交易记录表", HUASHENG_TRADE_HEADERS) ||
+    workbookSheetHasHeaders(workbook, "公司行动记录表", HUASHENG_COMPANY_ACTION_HEADERS)
+  );
+}
+
 function lowerFileName(fileName) {
   return String(fileName ?? "").toLowerCase();
 }
@@ -1358,6 +1383,13 @@ function isPdfFile(fileName) {
 
 function baseBrokerGuess(fileName) {
   const lower = lowerFileName(fileName);
+  if (fileName.includes("华盛") || fileName.includes("華盛") || lower.includes("huasheng") || lower.includes("valuable capital")) {
+    return {
+      broker: "huasheng",
+      confidence: "high",
+      reason: "文件名包含华盛/华盛通特征，已默认选择华盛。",
+    };
+  }
   if (fileName.includes("富途") || lower.includes("futu") || lower.includes("moomoo")) {
     return {
       broker: "futu",
@@ -1488,6 +1520,13 @@ async function detectBrokerFromFile(file, password) {
         sheetRows: 20,
         cellDates: false,
       });
+      if (hasHuashengTaxWorkbookSheet(workbook)) {
+        return {
+          broker: "huasheng",
+          confidence: "high",
+          reason: "识别到华盛“证券交易记录表”或“公司行动记录表”表头，已默认选择华盛。",
+        };
+      }
       const sheetHits = FUTU_SHEET_MARKERS.filter((sheetName) => workbook.Sheets[sheetName]);
       if (sheetHits.length >= 3) {
         return {
@@ -1509,6 +1548,13 @@ async function detectBrokerFromFile(file, password) {
           broker: "futu",
           confidence: "high",
           reason: "文件内容包含富途账户/报表特征，已默认选择富途。",
+        };
+      }
+      if (hasAnyMarker(preview, HUASHENG_TEXT_MARKERS)) {
+        return {
+          broker: "huasheng",
+          confidence: "high",
+          reason: "文件内容包含华盛/华盛通特征，已默认选择华盛。",
         };
       }
       if (hasAnyMarker(preview, PANDA_TEXT_MARKERS)) {
@@ -1625,6 +1671,13 @@ async function detectBrokerFromFile(file, password) {
           broker: "usmart",
           confidence: "high",
           reason: "PDF 内容包含盈立/uSmart 月结单特征，已默认选择盈立。",
+        };
+      }
+      if (hasAnyMarker(preview, HUASHENG_TEXT_MARKERS)) {
+        return {
+          broker: "huasheng",
+          confidence: "low",
+          reason: "PDF 内容包含华盛/华盛通特征，但当前华盛解析器只接受“证券交易记录表”和“公司行动记录表”Excel。",
         };
       }
       if (hasAnyMarker(preview, FUTU_TEXT_MARKERS)) {
@@ -2090,7 +2143,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>{isFileDragActive ? "松开即可上传券商文件" : "拖入或点击上传券商文件"}</p>
-            <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 华盛 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {fileGroups.map((group) => {
@@ -4175,7 +4228,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表、长桥/熊猫/卓锐/盈立 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、华盛证券交易记录表/公司行动记录表 Excel、长桥/熊猫/卓锐/盈立 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -4258,7 +4311,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <TaxCheckMark className="intro-brand-mark" />
         <h2 id="intro-title">TaxCheck 是什么</h2>
         <p>
-          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、熊猫、招商永隆、卓锐、盈立、老虎、IBKR等券商。
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、华盛、长桥、熊猫、招商永隆、卓锐、盈立、老虎、IBKR等券商。
           <br />
           <br />
           <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>

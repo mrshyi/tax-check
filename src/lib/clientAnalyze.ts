@@ -6,6 +6,7 @@ import {
 import { taxConfigForYear } from "@/lib/tax/config";
 import { parseCmbWingLungPdfs } from "@/lib/parsers/cmbWingLung";
 import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
+import { parseHuashengWorkbooks } from "@/lib/parsers/huasheng";
 import { parseIbkrPdfs } from "@/lib/parsers/ibkr";
 import { parseLongbridgeFiles, type ManualSecurityAliasInput } from "@/lib/parsers/longbridge";
 import { parsePandaPdfs } from "@/lib/parsers/panda";
@@ -15,7 +16,7 @@ import { parseZirconPdfs } from "@/lib/parsers/zircon";
 import { ParserValidationError } from "@/lib/parsers/common";
 import type { CostBasisCorrection, CostBasisMethod, ParsedInput, TaxAnalysis } from "@/lib/tax/types";
 
-export type BrokerId = "futu" | "longbridge" | "panda" | "cmbWingLung" | "tiger" | "zircon" | "usmart" | "ibkr";
+export type BrokerId = "futu" | "longbridge" | "panda" | "cmbWingLung" | "tiger" | "zircon" | "usmart" | "ibkr" | "huasheng";
 
 export interface UploadFileEntry {
   id: string;
@@ -129,6 +130,7 @@ export async function analyzeUploadedFiles(options: {
   }
 
   const futuFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const huashengFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const longbridgeFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const pandaFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const cmbWingLungFiles: Array<{ name: string; data: ArrayBuffer }> = [];
@@ -146,6 +148,11 @@ export async function analyzeUploadedFiles(options: {
         throw new ParserValidationError(`${file.name} 被标记为富途，但富途解析器只接受 Excel 年度报表。`, file.name);
       }
       futuFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else if (entry.broker === "huasheng") {
+      if (!lower.endsWith(".xlsx") && !lower.endsWith(".xls")) {
+        throw new ParserValidationError(`${file.name} 被标记为华盛，但华盛解析器只接受“证券交易记录表”和“公司行动记录表”Excel。`, file.name);
+      }
+      huashengFiles.push({ name: file.name, data: await file.arrayBuffer() });
     } else if (entry.broker === "longbridge") {
       if (!lower.endsWith(".pdf") && !lower.endsWith(".xlsx") && !lower.endsWith(".xls")) {
         throw new ParserValidationError(`${file.name} 被标记为长桥，但长桥解析器只接受 PDF 月结单或股票账户明细 Excel。`, file.name);
@@ -187,6 +194,9 @@ export async function analyzeUploadedFiles(options: {
   const inputs: ParsedInput[] = [];
   if (futuFiles.length > 0) {
     inputs.push(parseFutuWorkbooks(futuFiles, options.manualCosts ?? [], options.taxYear));
+  }
+  if (huashengFiles.length > 0) {
+    inputs.push(parseHuashengWorkbooks(huashengFiles, options.manualCosts ?? [], options.taxYear));
   }
   if (longbridgeFiles.length > 0) {
     const hasLongbridgePdf = longbridgeFiles.some((file) => /\.pdf$/i.test(file.name));
