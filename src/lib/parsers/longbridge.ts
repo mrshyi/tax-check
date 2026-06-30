@@ -312,6 +312,11 @@ const KNOWN_SECURITY_ALIASES: Record<string, SecurityAlias> = {
     currency: "USD",
   },
   "kulr tech": { code: "KULR", name: "KULR Tech", market: "美国市场", currency: "USD" },
+  meta: { code: "META", name: "Meta", market: "美国市场", currency: "USD" },
+  "meta platforms": { code: "META", name: "Meta", market: "美国市场", currency: "USD" },
+  strategy: { code: "MSTR", name: "Strategy", market: "美国市场", currency: "USD" },
+  microstrategy: { code: "MSTR", name: "MicroStrategy", market: "美国市场", currency: "USD" },
+  "microstrategy inc": { code: "MSTR", name: "MicroStrategy", market: "美国市场", currency: "USD" },
   microsoft: { code: "MSFT", name: "Microsoft", market: "美国市场", currency: "USD" },
   "micron tech": { code: "MU", name: "Micron Tech", market: "美国市场", currency: "USD" },
   nvidia: { code: "NVDA", name: "NVIDIA", market: "美国市场", currency: "USD" },
@@ -363,6 +368,7 @@ const KNOWN_SECURITY_ALIASES: Record<string, SecurityAlias> = {
   "阿里巴巴 sw": { code: "09988", name: "阿里巴巴-SW", market: "香港市场", currency: "HKD" },
   联合健康: { code: "UNH", name: "联合健康", market: "美国市场", currency: "USD" },
   苹果: { code: "AAPL", name: "Apple", market: "美国市场", currency: "USD" },
+  visa: { code: "V", name: "Visa", market: "美国市场", currency: "USD" },
   微软: { code: "MSFT", name: "Microsoft", market: "美国市场", currency: "USD" },
   特斯拉: { code: "TSLA", name: "Tesla", market: "美国市场", currency: "USD" },
   亚马逊: { code: "AMZN", name: "Amazon", market: "美国市场", currency: "USD" },
@@ -387,6 +393,23 @@ const KNOWN_SECURITY_ALIASES: Record<string, SecurityAlias> = {
   "satixfy communications": { code: "SATX", name: "SatixFy Communications", market: "美国市场", currency: "USD" },
   taiwan: { code: "TSM", name: "Taiwan Semiconductor", market: "美国市场", currency: "USD" },
   "taiwan semiconductor": { code: "TSM", name: "Taiwan Semiconductor", market: "美国市场", currency: "USD" },
+  "20 年期以上美国国债": { code: "TLT", name: "iShares 20+ Year Treasury Bond ETF", market: "美国市场", currency: "USD" },
+  "20 年期以上美国国债 etf ishares": {
+    code: "TLT",
+    name: "iShares 20+ Year Treasury Bond ETF",
+    market: "美国市场",
+    currency: "USD",
+  },
+  "ishares 20 year treasury bond etf": {
+    code: "TLT",
+    name: "iShares 20+ Year Treasury Bond ETF",
+    market: "美国市场",
+    currency: "USD",
+  },
+  "纳指 100 etf": { code: "QQQ", name: "Invesco QQQ Trust", market: "美国市场", currency: "USD" },
+  "纳指 100 etf invesco": { code: "QQQ", name: "Invesco QQQ Trust", market: "美国市场", currency: "USD" },
+  "纳指100etf invesco": { code: "QQQ", name: "Invesco QQQ Trust", market: "美国市场", currency: "USD" },
+  "标普 500 etf spdr": { code: "SPY", name: "SPDR S&P 500 ETF Trust", market: "美国市场", currency: "USD" },
 };
 
 function clean(value: string) {
@@ -810,7 +833,7 @@ function securityAliasKey(value: string) {
 
 function isSecurityCodeCandidate(value: string) {
   const text = value.trim();
-  return /^\d{3,6}$/.test(text) || /^[A-Z]{1,6}$/.test(text) || /^HK\d{6,}$/i.test(text);
+  return /^\d{3,6}$/.test(text) || /^[A-Z]{1,6}(?:\.[A-Z])?$/.test(text) || /^HK\d{6,}$/i.test(text);
 }
 
 function segmentSecurityDelimiters(value: string) {
